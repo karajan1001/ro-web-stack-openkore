@@ -26,7 +26,12 @@ sub add {
 
 sub get {
 	my ($self, $sessionID) = @_;
-	return $self->{sessions}{$sessionID};
+	my $session = $self->{sessions}{$sessionID};
+	if ($session && time - $session->{time} > SESSION_TIMEOUT) {
+		$self->remove($sessionID);
+		return;
+	}
+	return $session;
 }
 
 sub getIndex {
@@ -41,22 +46,24 @@ sub getIndex {
 
 sub mark {
 	my ($self, $sessionID) = @_;
-	my $session = $self->{sessions}{$sessionID};
+	my $session = $self->get($sessionID);
 	if ($session) {
 		my $index = $self->getIndex($session);
 		$session->{time} = time;
-		splice(@{$self->{sessionsByTime}}, $index, 1);
+		splice(@{$self->{sessionsByTime}}, $index, 1) if $index >= 0;
 		push @{$self->{sessionsByTime}}, $session;
 	}
+	return $session;
 }
 
 sub remove {
 	my ($self, $sessionID) = @_;
-	my $session = $self->{sessions}{$sessionID};
+	my $session = delete $self->{sessions}{$sessionID};
 	if ($session) {
 		my $index = $self->getIndex($session);
-		splice(@{$self->{sessionsByTime}}, $index, 1);
+		splice(@{$self->{sessionsByTime}}, $index, 1) if $index >= 0;
 	}
+	return $session;
 }
 
 sub removeTimedOutSessions {

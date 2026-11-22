@@ -31,6 +31,7 @@ sub new {
 
 sub DESTROY {
 	my ($self) = @_;
+	return if ${^GLOBAL_PHASE} eq 'DESTRUCT';
 	Plugins::delHooks(delete $self->{hooks}) if $self->{hooks};
 }
 
