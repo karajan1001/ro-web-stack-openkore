@@ -109,3 +109,7 @@ However, if you distribute modified versions, you **MUST** also distribute the s
 
 
 See https://www.gnu.org/licenses/gpl-3.0.html for the full license.
+
+## Project resource images
+
+The project keeps UI images and historical plugin artwork in the selected game resource `data/` directory. Before starting standalone GUI tools, packaging OpenKore or opening local plugin documents, run `perl prepare-resource-images.pl /path/to/resource/data`. The command also accepts `RO_CLIENT_DATA_ROOT` and creates ignored local copies for this checkout. Existing files with different content are preserved. Use the data directory paired with this OpenKore revision.
