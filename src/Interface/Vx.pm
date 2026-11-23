@@ -688,16 +688,14 @@ sub loadMap {
 	$self->{map}{'canvas'}->createText(50,20,-text =>'Processing..',-tags=>'map');
 
 	my $name = $field->baseName;
-	if (-f $self->_map("$name.jpg")) {
-		require Tk::JPEG;
-		$self->{map}{'map'} = $self->{map}{'canvas'}->Photo(-format => 'jpeg', -file=> $self->_map("$name.jpg"));
-	} elsif (-f $self->_map("$name.png")) {
+	if (-f $self->_map("$name.png")) {
 		require Tk::PNG;
 		$self->{map}{'map'} = $self->{map}{'canvas'}->Photo(-format => 'png', -file=> $self->_map("$name.png"));
+	} elsif (-f $self->_map("$name.jpg")) {
+		require Tk::JPEG;
+		$self->{map}{'map'} = $self->{map}{'canvas'}->Photo(-format => 'jpeg', -file=> $self->_map("$name.jpg"));
 	} elsif (-f $self->_map("$name.gif")) {
 		$self->{map}{'map'} = $self->{map}{'canvas'}->Photo(-format => 'gif', -file=> $self->_map("$name.gif"));
-	} elsif (-f $self->_map("$name.bmp")) {
-		$self->{map}{'map'} = $self->{map}{'canvas'}->Bitmap(-file => $self->_map("$name.bmp"));
 	} else {
 		$self->{map}{'map'} = $self->{map}{'canvas'}->Photo(-format => 'xpm', -data => Utils::xpmmake($field->width, $field->height, $field->{rawMap}));
 	}
