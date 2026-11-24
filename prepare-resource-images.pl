@@ -130,4 +130,6 @@ src/Task/UseSkill.png
 src/build/openkore.ico
 src/doc/srcdoc/development.png
 src/doc/srcdoc/ipc-network.png
+src/doc/srcdoc/ipc-network.svgz
 src/doc/srcdoc/overview.png
+src/doc/srcdoc/overview.svgz
