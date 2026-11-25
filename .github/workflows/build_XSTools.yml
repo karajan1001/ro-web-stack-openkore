@@ -495,6 +495,46 @@ jobs:
     - name: GIT checkout
       uses: actions/checkout@v7
 
+    # CI delivery copies. The paired resource data directory maintains the originals.
+    - name: Restore pinned distribution images
+      env:
+        IMAGES: ${{ vars.OPENKORE_DIST_IMAGES_B1070C51 }}
+        DOCS_1: ${{ vars.OPENKORE_DIST_DOCS_B1070C51_1 }}
+        DOCS_2: ${{ vars.OPENKORE_DIST_DOCS_B1070C51_2 }}
+      run: |
+        python3 - <<'PYTHON'
+        import base64
+        import hashlib
+        import io
+        import os
+        from pathlib import Path
+        import tarfile
+
+        archives = [
+            (os.environ['IMAGES'], '60e463392c09ca9912fdd810df9db3a1a35c97ec3f4342971f1fe54d6a680cab', {
+                'src/Interface/Wx/close.png', 'src/Interface/Wx/window.png',
+                'src/Task/UseSkill.png', 'src/build/openkore.ico',
+            }),
+            (os.environ['DOCS_1'] + os.environ['DOCS_2'], '54ddef6507f45d0cb2e42175e4c1c98a5de08024fd2d87ebe0cf345eb4d3f371', {
+                'src/doc/srcdoc/development.png', 'src/doc/srcdoc/ipc-network.png',
+                'src/doc/srcdoc/ipc-network.svgz', 'src/doc/srcdoc/overview.png',
+                'src/doc/srcdoc/overview.svgz',
+            }),
+        ]
+        for encoded, digest, expected in archives:
+            blob = base64.b64decode(encoded, validate=True)
+            if hashlib.sha256(blob).hexdigest() != digest:
+                raise SystemExit('Distribution image archive SHA-256 mismatch')
+            with tarfile.open(fileobj=io.BytesIO(blob), mode='r:gz') as archive:
+                members = archive.getmembers()
+                if len(members) != len(expected) or {member.name for member in members} != expected:
+                    raise SystemExit('Unexpected distribution image archive paths')
+                if not all(member.isfile() for member in members):
+                    raise SystemExit('Distribution images must be regular files')
+                for member in members:
+                    Path(member.name).write_bytes(archive.extractfile(member).read())
+        PYTHON
+
     - name: run "makedist.sh --help"
       shell: bash
       run: ./makedist.sh --help || echo -e "\e[34m# done"

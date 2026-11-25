@@ -18,7 +18,7 @@ use strict;
 use Scalar::Util qw(weaken);
 use Math::BigInt;
 use Globals qw(
-	$char $field %statusHandle @skillsID @itemsID %items
+	$char $net $field %statusHandle @skillsID @itemsID %items
 	$portalsList $npcsList $monstersList $playersList $petsList
 	@friendsID %friends %pet @partyUsersID %spells
 	@chatRoomsID %chatRooms @venderListsID %venderLists $hotkeyList
@@ -26,6 +26,7 @@ use Globals qw(
 	%cashShop
 );
 use Base::Ragnarok::MapServer;
+use Network;
 use base qw(Base::Ragnarok::MapServer);
 use Network::MessageTokenizer;
 use I18N qw(stringToBytes);
@@ -763,11 +764,16 @@ sub map_login {
 		&& $session->{sex} == $args->{sex}
 		&& $session->{charID} eq $args->{charID}
 		&& $session->{state} eq 'About to load map'
+		&& ($session->{dummy} || ($net && $net->getState() == Network::IN_GAME && $char
+			&& $char->{ID} eq $session->{accountID}
+			&& $char->{charID} eq $session->{charID}
+			&& $char->{sex} == $session->{sex}))
 	) {
 		$client->close();
 
 	} else {
-		$self->{sessionStore}->remove($session);
+		$self->{sessionStore}->remove($session->{sessionID});
+		$session->{state} = 'In game';
 		$client->{session} = $session;
 
 		if (exists $self->{recvPacketParser}{packet_lut}{define_check}) {

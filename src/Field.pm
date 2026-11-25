@@ -896,7 +896,7 @@ sub image {
 	if ($search) {
 		($format) = split /\s*,\s*/, $search;
 	} else {
-		$search = 'jpg, png, bmp, xpm';
+		$search = 'png, jpg, xpm';
 		$format = 'xpm';
 	}
 

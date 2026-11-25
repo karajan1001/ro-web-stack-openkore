@@ -1,15 +1,15 @@
 package Base::Ragnarok::CharServer;
 
 use strict;
-use Time::HiRes qw(time);
 use Socket qw(inet_aton);
 
 use Modules 'register';
 use Base::RagnarokServer;
 use base qw(Base::RagnarokServer);
 use Misc;
+use Network;
 use I18N qw(stringToBytes);
-use Globals qw($char %config $accountID $field %charSvrSet $masterServer);
+use Globals qw($char $net %config $accountID $field %charSvrSet $masterServer);
 
 use constant SESSION_TIMEOUT => 120;
 use constant DUMMY_CHARACTER => {
@@ -88,13 +88,10 @@ sub game_login {
 		$client->close();
 
 	} else {
-		# SECURITY NOTE: the session should be marked as belonging to this
-		# character server only. Right now there is the possibility that
-		# someone can login to another character server with a session
-		# that was already handled by this one.
-		$self->{sessionStore}->mark($session);
+		$self->{sessionStore}->mark($session->{sessionID});
+		$session->{state} = 'Selecting character';
+		$session->{charID} = $char->{charID} if !$session->{dummy} && $char;
 		$client->{session} = $session;
-		$session->{time} = time;
 		$client->send($args->{accountID});
 
 		my $output;
@@ -151,12 +148,9 @@ sub sendCharInfo {
 sub char_login {
 	# Select character.
 	my ($self, $args, $client) = @_;
-	my $session = $client->{session};
+	my $session = $self->_selectionSession($client);
 	if ($session) {
-		$self->{sessionStore}->mark($session);
-		my @characters = $self->getCharacters();
-
-		if ($args->{slot} != $char->{slot}) {
+		if (!$self->_selectionCharacterMatches($session) || $args->{slot} != $char->{slot}) {
 			# Invalid character selected.
 			$client->send(pack('C*', 0x6C, 0x00, 0));
 		} else {
@@ -168,6 +162,7 @@ sub char_login {
 				my $host = inet_aton($self->{mapServer}->getHost);
 				$host = inet_aton($client->{BSC_sock}->sockhost) if $host eq "\000\000\000\000";
 
+				$self->{sessionStore}->mark($session->{sessionID});
 				$session->{charID} = $char->{charID};
 				$session->{state} = 'About to load map';
 				$client->send($self->{recvPacketParser}->reconstruct({
@@ -200,13 +195,49 @@ sub sync_received_characters {
 }
 
 sub ban_check {
-	# Ban check.
-	# Doing nothing seems to work.
-	my ($self, $ID, $client) = @_;
+	my ($self, $args, $client) = @_;
+	my $session = $self->_selectionSession($client);
+	unless ($session && $session->{accountID} eq $args->{accountID}
+		&& $self->_selectionCharacterMatches($session)) {
+		$client->close();
+		return;
+	}
+	# Only the authenticated, live character-selection connection renews
+	# its session. Offline dummy sessions retain the original short timeout.
+	$self->{sessionStore}->mark($session->{sessionID}) unless $session->{dummy};
 	$client->send($self->{recvPacketParser}->reconstruct({
 		switch => 'sync_request',
-		accountID => $ID,
+		ID => $args->{accountID},
 	}));
+}
+
+sub _selectionSession {
+	my ($self, $client) = @_;
+	my $session = $client->{session};
+	return unless $session && $session->{state} eq 'Selecting character'
+		&& $client->getSocket()->connected;
+	my $stored = $self->{sessionStore}->get($session->{sessionID});
+	return $session if $stored && $stored == $session;
+	return;
+}
+
+sub _selectionCharacterMatches {
+	my ($self, $session) = @_;
+	return 1 if $session->{dummy};
+	return $net && $net->getState() == Network::IN_GAME && $char
+		&& $char->{ID} eq $session->{accountID}
+		&& $char->{charID} eq $session->{charID}
+		&& $char->{sex} == $session->{sex};
+}
+
+sub onClientExit {
+	my ($self, $client, $index) = @_;
+	my $session = delete $client->{session};
+	if ($session && $session->{state} eq 'Selecting character') {
+		my $stored = $self->{sessionStore}->get($session->{sessionID});
+		$self->{sessionStore}->remove($session->{sessionID}) if $stored && $stored == $session;
+	}
+	$self->SUPER::onClientExit($client, $index);
 }
 
 sub char_create {

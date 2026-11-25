@@ -53,7 +53,8 @@ sub map_login {
 		$client->close();
 
 	} else {
-		$self->{sessionStore}->remove($session);
+		$self->{sessionStore}->remove($session->{sessionID});
+		$session->{state} = 'In game';
 		$client->{session} = $session;
 
 		if (exists $self->{recvPacketParser}{packet_lut}{define_check}) {

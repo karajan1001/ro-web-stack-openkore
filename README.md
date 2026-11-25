@@ -109,3 +109,9 @@ However, if you distribute modified versions, you **MUST** also distribute the s
 
 
 See https://www.gnu.org/licenses/gpl-3.0.html for the full license.
+
+## Project resource images
+
+The project keeps UI images and historical plugin artwork in the selected game resource `data/` directory. Before starting standalone GUI tools, packaging OpenKore or opening local plugin documents, run `perl prepare-resource-images.pl /path/to/resource/data`. The command also accepts `RO_CLIENT_DATA_ROOT` and creates ignored local copies for this checkout. Existing files with different content are preserved. Use the data directory paired with this OpenKore revision.
+
+CI packaging uses two fixed gzip-compressed USTAR archives generated from the paired `b1070c51` data resources. The four interface images use `OPENKORE_DIST_IMAGES_B1070C51`; five documentation images use `OPENKORE_DIST_DOCS_B1070C51_1` and `_2` as consecutive base64 segments. Their SHA-256 hashes and exact paths are pinned in the distribution workflow. To update either archive, sort its listed paths under `data/assets/components/openkore`, write regular USTAR files with mode 0644, zero uid/gid/mtime and empty owner/group names, then gzip at level 9 with empty filename and mtime 0. Base64-encode the bytes, split the documentation value into two parts, and update both the corresponding workflow hash and Actions variables. The server resource directory remains the maintained source.
