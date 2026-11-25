@@ -33,12 +33,15 @@ use Digest::MD5;
 use Math::BigInt;
 
 # TODO: remove 'use Globals' from here, instead pass vars on
-use Globals qw(%ai_v %config $bytesSent %packetDescriptions $enc_val1 $enc_val2 $char $masterServer $syncSync $accountID %timeout %talk $skillExchangeItem $net $rodexList $rodexWrite %universalCatalog %rpackets $mergeItemList $repairList %cashShop);
+use Globals qw(%ai_v %config $bytesSent %packetDescriptions $enc_val1 $enc_val2 $char $masterServer $syncSync $accountID %timeout %talk $skillExchangeItem $net $rodexList $rodexWrite %universalCatalog %rpackets $mergeItemList $repairList %cashShop $refineUI);
 
 use I18N qw(bytesToString stringToBytes);
 use Utils qw(existsInList getHex getTickCount getCoordString makeCoordsDir);
+use FileParsers ();
 use Misc;
-use Log qw(debug);
+use Log qw(debug error);
+use Settings ();
+use Translation qw(T);
 
 sub new {
 	my ( $class ) = @_;
@@ -244,6 +247,22 @@ sub sendToServer {
 		);
 		Plugins::callHook($hookName, \%args);
 		return if ($args{return});
+	}
+
+	if ($char && $char->{barterShop} && length($msg) == 2
+		&& $messageID eq ($char->{barterShop}{expanded} ? '0B58' : '0B12')) {
+		delete $char->{barterShop};
+	}
+
+	if ($refineUI && $refineUI->{open}) {
+		if ($messageID eq '0AA1' && length($msg) == 4) {
+			$refineUI = {open => 1, selectedID => substr($msg, 2, 2)};
+		} elsif ($messageID eq '0AA3' && (length($msg) == 7 || length($msg) == 9)
+			&& defined $refineUI->{selectedID} && $refineUI->{selectedID} eq substr($msg, 2, 2)) {
+			$refineUI->{pending} = 1;
+		} elsif ($messageID eq '0AA4' && length($msg) == 2) {
+			undef $refineUI;
+		}
 	}
 
 	# Packet Prefix Encryption Support
@@ -577,6 +596,7 @@ sub sendGetCharacterName {
 
 sub sendTalk {
 	my ($self, $ID) = @_;
+	$self->sendBarterClose($char->{barterShop}{expanded}) if $char && $char->{barterShop};
 	delete $talk{msg};
 	delete $talk{image};
 	$self->sendToServer($self->reconstruct({switch => 'npc_talk', ID => $ID, type => 1}));
@@ -662,13 +682,21 @@ sub sendTake {
 sub sendDrop {
 	my ($self, $ID, $amount) = @_;
 	$self->sendToServer($self->reconstruct({switch => 'item_drop', ID => $ID, amount => $amount}));
-	debug sprintf("Sent drop: %s x $amount\n", unpack('v', $ID)), "sendPacket", 2;
+	debug sprintf("Sent drop: %s x $amount\n", unpack('v', $ID)), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 sub sendItemUse {
 	my ($self, $ID, $targetID) = @_;
+	my $packages = $self->itemPackageCatalog;
+	if (keys %$packages && $char) {
+		my $item = $char->inventory->getByID($ID);
+		if ($item && exists $packages->{$item->{nameID}}) {
+			error T("This package requires a reward choice. Use 'is' to see its options.\n");
+			return;
+		}
+	}
 	$self->sendToServer($self->reconstruct({switch => 'item_use', ID => $ID, targetID => $targetID}));
-	debug sprintf("Item Use: %s\n", unpack('v', $ID)), "sendPacket", 2;
+	debug sprintf("Item Use: %s\n", unpack('v', $ID)), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 # for old plugin compatibility, use sendRestart instead!
@@ -692,7 +720,7 @@ sub sendStorageAdd {
 	} else {
 		$self->sendToServer($self->reconstruct({switch => 'storage_item_add', ID => $ID, amount => $amount}));
 	}
-	debug sprintf("Sent Storage Add: %s x $amount\n", unpack('v', $ID)), "sendPacket", 2;
+	debug sprintf("Sent Storage Add: %s x $amount\n", unpack('v', $ID)), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 sub sendStorageGet {
@@ -702,7 +730,7 @@ sub sendStorageGet {
 	} else {
 		$self->sendToServer($self->reconstruct({switch => 'storage_item_remove', ID => $ID, amount => $amount}));
 	}
-	debug sprintf("Sent Storage Get: %s x $amount\n", unpack('v', $ID)), "sendPacket", 2;
+	debug sprintf("Sent Storage Get: %s x $amount\n", unpack('v', $ID)), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 sub sendStoragePassword {
@@ -1040,7 +1068,7 @@ sub sendSlaveMove {
 		y => $y,
 	}));
 
-	debug sprintf("Sent %s move to: %d, %d\n", Actor::get($ID), $x, $y), "sendPacket", 2;
+	debug sprintf("Sent %s move to: %d, %d\n", Actor::get($ID), $x, $y), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 sub sendFriendListReply {
@@ -1096,7 +1124,7 @@ sub sendSkillSelect {
 		skillID => $skillID,
 		why => $why,
 	}));
-	debug sprintf("Sent Skill Select (skillID: %d, why: %d)", $skillID, $why), 'sendPacket', 2;
+	debug sprintf("Sent Skill Select (skillID: %d, why: %d)", $skillID, $why), 'sendPacket', 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 sub sendReplySyncRequestEx {
@@ -1211,7 +1239,7 @@ sub sendMiscConfigSet {
 		)
 	);
 
-	debug sprintf("Sent Misc Config Type: %s Flag: %s.\n", $type, $flag), "sendPacket", 2;
+	debug sprintf("Sent Misc Config Type: %s Flag: %s.\n", $type, $flag), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 sub sendSlaveAttack {
@@ -1268,7 +1296,7 @@ sub sendEquipSwitchAdd {
 		position => $position,
 	}));
 
-	debug sprintf("Sent Equip Switch Add Item: %s\n", unpack('v', $ID)), "sendPacket", 2;
+	debug sprintf("Sent Equip Switch Add Item: %s\n", unpack('v', $ID)), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 # Request to remove an equip from the equip switch window
@@ -1283,7 +1311,7 @@ sub sendEquipSwitchRemove {
 		position =>  $position,
 	}));
 
-	debug sprintf("Sent Equip Switch Remove Item: %s\n", unpack('v', $ID)), "sendPacket", 2;
+	debug sprintf("Sent Equip Switch Remove Item: %s\n", unpack('v', $ID)), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 # Request to do a full equip switch
@@ -1308,7 +1336,7 @@ sub sendEquipSwitchSingle {
 		ID => $ID
 	}));
 
-	debug sprintf("Sent Equip Switch Single Item: %s\n", unpack('v', $ID)), "sendPacket", 2;
+	debug sprintf("Sent Equip Switch Single Item: %s\n", unpack('v', $ID)), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 sub sendProgress {
@@ -1326,7 +1354,7 @@ sub sendDealAddItem {
 		ID => $ID,
 		amount => $amount
 	}));
-	debug sprintf("Sent Deal Add Item: %s, $amount\n", unpack('v', $ID)), "sendPacket", 2;
+	debug sprintf("Sent Deal Add Item: %s, $amount\n", unpack('v', $ID)), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 }
 
 ##
@@ -1376,8 +1404,19 @@ sub sendRefineUISelect {
 	debug "Checking item for RefineUI\n", "sendPacket";
 }
 
+sub reconstruct_refineui_refine {
+	my ($self, $args) = @_;
+	$args->{options} = pack($self->refineUIItemIDFormat . ' C', $args->{catalyst}, $args->{bless});
+}
+
+sub parse_refineui_refine {
+	my ($self, $args) = @_;
+	my $length = length $args->{options};
+	return unless $length == 3 || $length == 5;
+	@$args{qw(catalyst bless)} = unpack($length == 5 ? 'V C' : 'v C', $args->{options});
+}
+
 # Continue to refine equip
-# '0AA3' => ['refineui_refine', 'a2 v C' ,[qw(index catalyst bless)]],
 # @param itemIndex OpenKore's Inventory Item Index
 # @param materialNameIDMaterial's NameID
 # @param useCatalyst Catalyst (Blacksmith Blessing) toggle. 0 = Not using, 1 = Use catalyst
@@ -1657,11 +1696,14 @@ sub sendUnequip {
 }
 
 sub sendAddStatusPoint {
-    my ($self, $ID,$Amount) = @_;
+    my ($self, $ID, $Amount) = @_;
+    my $switch = ($ID >= STATUS_POW && $ID <= STATUS_CRT)
+        ? 'send_add_trait_status_point'
+        : 'send_add_status_point';
     $self->sendToServer($self->reconstruct({
-        switch => 'send_add_status_point',
+        switch => $switch,
         statusID => $ID,
-        Amount => '1',
+        Amount => $Amount || 1,
     }));
 }
 
@@ -1893,9 +1935,10 @@ sub sendRepairItem {
 	$self->sendToServer($self->reconstruct({
 		switch => 'repair_item',
 		index => $args->{index},
-		nameID => $args->{nameID},
-		upgrade => $args->{upgrade},
-		cards => $args->{cards},
+		nameID => $args->{nameID} // 0,
+		upgrade => $args->{upgrade} // 0,
+		cards => $args->{cards} // '',
+		grade => $args->{grade} // 0,
 	}));
 	debug ("Sent repair item index: ".$args->{index}."\n", "sendPacket", 2);
 }
@@ -3231,7 +3274,7 @@ sub sendCashShopBuy {
 	my ($self, $points, $items) = @_;
 
 	if (scalar @{$items}) {
-		debug sprintf("Sent buying request from cashshop for %d items.\n", scalar @{$items}), "sendPacket", 2;
+		debug sprintf("Sent buying request from cashshop for %d items.\n", scalar @{$items}), "sendPacket", 2 if Log::debugEnabled('sendPacket', 2);
 		foreach my $item (@{$items}) {
 			$self->sendToServer($self->reconstruct({
 				switch => 'cash_dealer_buy',
@@ -3462,6 +3505,19 @@ sub sendSellBuyComplete {
 
 # Buy item from Market
 # 09D6
+sub sendBarterBuy {
+	my ($self, $expanded, $index, $nameID, $amount, $currencyIndex) = @_;
+	my $msg = $expanded
+		? pack('v v V3', 0x0B57, 16, $nameID, $index, $amount)
+		: pack('v v V V v V', 0x0B0F, 18, $nameID, $amount, $currencyIndex, $index);
+	$self->sendToServer($msg);
+}
+
+sub sendBarterClose {
+	my ($self, $expanded) = @_;
+	$self->sendToServer(pack('v', $expanded ? 0x0B58 : 0x0B12));
+}
+
 sub sendBuyBulkMarket {
 	my ($self, $r_array) = @_;
 
@@ -3575,6 +3631,33 @@ sub sendSelectAccessibleMapname {
         char_slot	=> $config{char},
         map_slot	=> $map_slot,
     }));
+}
+
+sub itemPackageCatalog {
+	my ($self) = @_;
+	unless (exists $self->{itemPackages}) {
+		my %packages;
+		my $table = Settings::addTableFile('itempackages.txt',
+			loader => [\&FileParsers::parseDataFile2, \%packages], mustExist => 0);
+		Settings::loadByHandle($table);
+		Settings::removeFile($table);
+		$self->{itemPackages} = \%packages;
+	}
+	return $self->{itemPackages};
+}
+
+sub itemPackageOptions {
+	my ($self, $nameID) = @_;
+	my $catalog = $self->itemPackageCatalog;
+	return unless exists $catalog->{$nameID};
+	my %options;
+	for my $entry (split ' ', $catalog->{$nameID} // '') {
+		return {} unless $entry =~ /\A(0|[1-9][0-9]*)=([0-9]+:[0-9]+(?:,[0-9]+:[0-9]+)*)\z/;
+		my ($option, $rewards) = ($1, $2);
+		return {} if $option > 0xFFFFFFFF || exists $options{$option};
+		$options{$option} = [map { [split /:/, $_, 2] } split /,/, $rewards];
+	}
+	return \%options;
 }
 
 # 0BAF CZ_USE_PACKAGEITEM

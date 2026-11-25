@@ -224,6 +224,7 @@ our @EXPORT = (
 	portalExistsAirship
 	redirectXKoreMessages
 	monKilled
+	countMonsterKill
 	getActorName
 	getActorNames
 	findPartyUserID
@@ -384,9 +385,9 @@ sub applyDynamicPortalStates {
 				my $enabled = _dynamicPortalSelectionMatches($selection, $destID) ? 1 : 0;
 				$portals_lut{$source}{dest}{$destID}{enabled} = $enabled;
 				if ($enabled) {
-					debug "Dynamic portal enabled for group $group->{config_key}: $source -> $destID\n", "route", 1;
+					debug "Dynamic portal enabled for group $group->{config_key}: $source -> $destID\n", "route", 1 if Log::debugEnabled('route', 1);
 				} elsif (!$enabled) {
-					debug "Dynamic portal disabled for group $group->{config_key}: $source -> $destID\n", "route", 2;
+					debug "Dynamic portal disabled for group $group->{config_key}: $source -> $destID\n", "route", 2 if Log::debugEnabled('route', 2);
 				}
 				$matched ||= $enabled;
 			}
@@ -2854,14 +2855,8 @@ sub itemName {
 		} sort { cardName($a) cmp cardName($b) } keys %cards);
 	}
 
-    my $total_options = 0;
-
-	my @options = grep { $_->{type} } map { my @c = unpack 'vvC', $_;{ type => $c[0], value => $c[1], param => $c[2] } } unpack '(a5)*', $item->{options} || '';
-	foreach ( @options ) {
-		if ( $_->{type} ) {
-			$total_options++;
-		}
-	}
+	my @options = _parseItemOptions($item->{options});
+	my $total_options = scalar @options;
 
 	my $numSlots = $itemSlotCount_lut{$item->{nameID}} if ($prefix eq "");
 
@@ -2872,9 +2867,29 @@ sub itemName {
 	$display .= $name;
 	$display .= " [$suffix]" if $suffix;
 	$display .= " [$numSlots]" if $numSlots;
-	$display .= " [$total_options Option]" if $total_options;
+	if ($total_options) {
+		if ($config{showFullItemOptions}) {
+			$display .= " [" . join(", ", map { _formatItemOption($_) } @options) . "]";
+		} else {
+			$display .= " [$total_options Option]";
+		}
+	}
 
 	return $display;
+}
+
+sub _parseItemOptions {
+	my ($rawOptions) = @_;
+	return grep { $_->{type} }
+		map { my @c = unpack 'vvC', $_; { type => $c[0], value => $c[1], param => $c[2] } }
+		unpack '(a5)*', $rawOptions || '';
+}
+
+sub _formatItemOption {
+	my ($opt) = @_;
+	my $option = ($itemOptionHandle{$opt->{type}} && $itemOption_lut{$itemOptionHandle{$opt->{type}}}) || $itemOption_lut{$opt->{type}};
+	return sprintf($option, $opt->{value}) if $option;
+	return TF("Option (%d, %d, %d)", $opt->{type}, $opt->{value}, $opt->{param});
 }
 
 sub itemNameToID {
@@ -3269,7 +3284,7 @@ sub meetingPosition {
 		} else {
 			$runFromTarget_minStep = $config{runFromTarget_minStep};
 		}
-		$followDistanceMax = $config{followDistanceMax};
+		$followDistanceMax = $config{followAttackDistance} || $config{followDistanceMax};
 		$attackCanSnipe = $config{attackCanSnipe};
 		if ($config{follow}) {
 			foreach (keys %players) {
@@ -3294,7 +3309,7 @@ sub meetingPosition {
 		} else {
 			$runFromTarget_minStep =  $config{$actor->{configPrefix}.'runFromTarget_minStep'};
 		}
-		$followDistanceMax = $config{$actor->{configPrefix}.'followDistanceMax'};
+		$followDistanceMax = $config{$actor->{configPrefix}.'followAttackDistance'} || $config{$actor->{configPrefix}.'followDistanceMax'};
 		$attackCanSnipe = $config{$actor->{configPrefix}.'attackCanSnipe'};
 		$master = $char;
 		$masterPos = 1;
@@ -3316,7 +3331,9 @@ sub meetingPosition {
 	my $targetSpeed = ($target->{walk_speed} || 0.12);
 	my $timeSinceTargetMoved = time - $target->{time_move} + $extra_time;
 
-	my $target_solution = get_solution($field, $target->{pos}, $target->{pos_to});
+	my $target_solution = $target->{pos}{x} == $target->{pos_to}{x} && $target->{pos}{y} == $target->{pos_to}{y}
+		? [$target->{pos_to}]
+		: get_solution($field, $target->{pos}, $target->{pos_to});
 
 	# Calculate the time target will need to finish moving from pos to pos_to
 	my $timeTargetFinishMove = calcTimeFromSolution($target_solution, $targetSpeed);
@@ -3583,7 +3600,7 @@ sub meetingPosition {
 
 	if (defined $best_spot) {
 		debug "[meetingPosition] Best spot is $best_spot->{x} $best_spot->{y}, mob will be at $best_targetPosInStep->{x} $best_targetPosInStep->{y}, dist $best_dist_to_target, it will take $best_time seconds to get there.\n", "ai_attack", 1;
-		debug "[meetingPosition] Solution: ". join(' >> ', map { "$_->{x} $_->{y}" } @{$best_solution}) ."\n", "ai_attack", 3;
+		debug "[meetingPosition] Solution: ". join(' >> ', map { "$_->{x} $_->{y}" } @{$best_solution}) ."\n", "ai_attack", 3 if Log::debugEnabled('ai_attack', 3);
 		return $best_spot;
 	}
 
@@ -3733,14 +3750,10 @@ sub printItemDesc {
 	my $description = $itemsDesc_lut{$item->{nameID}} || T("Error: No description available.\n");
 	my $msg =  center(T(" Item Description "), 79, '-') ."\n";
 	$msg .= TF("Item: %s, ID: %s, Amount: %s\n\n", $item->{name}, $item->{nameID}, $item->{amount}), "info";
-	my @options = grep { $_->{type} } map { my @c = unpack 'vvC', $_;{ type => $c[0], value => $c[1], param => $c[2] } } unpack '(a5)*', $item->{options} || '';
+	my @options = _parseItemOptions($item->{options});
 	my $option_index = 1;
 	foreach ( @options ) {
-		if ( $itemOptionHandle{$_->{type}} && $itemOption_lut{$itemOptionHandle{$_->{type}}} ) {
-			$msg .= TF("OPTION %s: ", $option_index) . sprintf($itemOption_lut{$itemOptionHandle{$_->{type}}}, $_->{value}) . "\n";
-		} else {
-			$msg .= TF("OPTION %s: Option (%d, %d, %d)\n", $option_index, $_->{type}, $_->{value},$_->{param});
-		}
+		$msg .= TF("OPTION %s: ", $option_index) . _formatItemOption($_) . "\n";
 		$option_index++;
 	}
 	$msg .=  $description;
@@ -4152,6 +4165,11 @@ sub switchConfigFile {
 
 sub updateDamageTables {
 	my ($sourceID, $targetID, $damage) = @_;
+	if ($damage > 0 && (my $monster = $monstersList->getByID($targetID))) {
+		$monster->{lastDamageFromSelfOrSlave} = $sourceID eq $accountID || isMySlaveID($sourceID) ? 1
+			: $playersList->getByID($sourceID) || $slavesList->getByID($sourceID) || $monstersList->getByID($sourceID) ? 0
+			: undef;
+	}
 
 	# Track deltaHp
 	#
@@ -4301,7 +4319,7 @@ sub updateDamageTables {
 					$player->sendAttackStop;
 					$player->dequeue;
 				}
-				ai_useTeleport(1) if ($teleport);
+				ai_useTeleport(1, flee => 1) if ($teleport);
 			}
 		}
 
@@ -5064,6 +5082,11 @@ sub avoidGM_talk {
 # Disconnects / teleports if a player is detected.
 sub avoidList_near {
 	my $return = 0;
+	if (defined $ai_v{avoidList_reconnect}) {
+		return 1 if AI::inQueue('teleport');
+		relog(delete $ai_v{avoidList_reconnect}, 1);
+		return 1;
+	}
 	return if ($config{avoidList_inLockOnly} && $field->baseName ne $config{lockMap});
 
 	for my $player (@$playersList) {
@@ -5089,25 +5112,25 @@ sub avoidList_near {
 
 		my $msg;
 		if ( ($avoidPlayer && $avoidPlayer->{teleport_on_sight} == 1 && $avoidPlayer->{disconnect_on_sight} == 1)
-			|| ($avoidID && $avoidID->{teleport_on_sight} &&  $avoidID->{disconnect_on_sight})
-			|| ($avoidJob && $avoidJob->{teleport_on_sight} &&  $avoidJob->{disconnect_on_sight}) ) {
+			|| ($avoidID && $avoidID->{teleport_on_sight} == 1 && $avoidID->{disconnect_on_sight} == 1)
+			|| ($avoidJob && $avoidJob->{teleport_on_sight} == 1 && $avoidJob->{disconnect_on_sight} == 1) ) {
 			# like avoidGM_near Mode 1: teleport & disconnect
 			ai_useTeleport(1);
 			$msg = TF("Player %s (%d, %s) is nearby (%s), teleport & disconnect for %d seconds", $player->{name}, $player->{nameID}, $jobs_lut{$player->{jobID}}, $field->baseName, $config{avoidList_reconnect});
-			relog($config{avoidList_reconnect}, 1);
+			$ai_v{avoidList_reconnect} = $config{avoidList_reconnect} || 5;
 			$return = 1;
 
-		} elsif ( ($avoidPlayer && $avoidPlayer->{teleport_on_sight} && $avoidPlayer->{disconnect_on_sight})
-			|| ($avoidID && $avoidID->{teleport_on_sight} &&  $avoidID->{disconnect_on_sight})
-			|| ($avoidJob && $avoidJob->{teleport_on_sight} &&  $avoidJob->{disconnect_on_sight}) ) {
+		} elsif ( ($avoidPlayer && $avoidPlayer->{teleport_on_sight} == 2 && $avoidPlayer->{disconnect_on_sight} == 1)
+			|| ($avoidID && $avoidID->{teleport_on_sight} == 2 && $avoidID->{disconnect_on_sight} == 1)
+			|| ($avoidJob && $avoidJob->{teleport_on_sight} == 2 && $avoidJob->{disconnect_on_sight} == 1) ) {
 			# like avoidGM_near Mode 5: respawn & disconnect
 			ai_useTeleport(2);
 			$msg = TF("Player %s (%d, %s) is nearby (%s), respawning & disconnect for %d seconds", $player->{name}, $player->{nameID}, $jobs_lut{$player->{jobID}}, $field->baseName, $config{avoidList_reconnect});
-			relog($config{avoidList_reconnect}, 1);
+			$ai_v{avoidList_reconnect} = $config{avoidList_reconnect} || 5;
 			$return = 1;
 
 		} elsif ( !$net->clientAlive() && ( ($avoidPlayer && $avoidPlayer->{disconnect_on_sight}) ||
-			($avoidID && $avoidID->{disconnect_on_sight}) && ($avoidJob && $avoidJob->{disconnect_on_sight}) ) ) {
+			($avoidID && $avoidID->{disconnect_on_sight}) || ($avoidJob && $avoidJob->{disconnect_on_sight}) ) ) {
 			# like avoidGM_near Mode 2: disconnect
 			$msg = TF("Player %s (%d, %s) is nearby (%s), disconnect for %s seconds", $player->{name}, $player->{nameID}, $jobs_lut{$player->{jobID}}, $field->baseName, $config{avoidList_reconnect});
 			relog($config{avoidList_reconnect}, 1);
@@ -5130,12 +5153,14 @@ sub avoidList_near {
 			warning "$msg\n";
 			chatLog("k", "*** $msg ***\n");
 		}
+		return $return if defined $ai_v{avoidList_reconnect};
 
 	}
 	return $return;
 }
 
 sub avoidList_ID {
+	return if defined $ai_v{avoidList_reconnect};
 	return if (!($config{avoidList}) || ($config{avoidList_inLockOnly} && $field->baseName ne $config{lockMap}));
 
 	my $avoidID = unpack("V", shift);
@@ -5240,6 +5265,10 @@ sub compilePortals {
 					if ($@) {
 						$missingMap{$map} = 1;
 					}
+				}
+				if ($missingMap{$map}) {
+					$portals_los{$spawn}{$portal} = 0;
+					next;
 				}
 
 				my %start = %{$mapSpawns{$map}{$spawn}};
@@ -5375,6 +5404,20 @@ sub redirectXKoreMessages {
 	sendMessage($messageSender, "k", $message);
 }
 
+sub countMonsterKill {
+	my ($monster) = @_;
+	return if $monster->{killCounted} || (defined $monster->{lastDamageFromSelfOrSlave} && !$monster->{lastDamageFromSelfOrSlave});
+	$monster->{killCounted} = 1;
+	my $i = 0;
+	$i++ while $monsters_Killed[$i] && $monsters_Killed[$i]{nameID} ne $monster->{nameID};
+	if ($monsters_Killed[$i]) {
+		$monsters_Killed[$i]{count}++;
+	} else {
+		$monsters_Killed[$i] = {nameID => $monster->{nameID}, name => $monster->{name}, count => 1};
+	}
+	monsterLog($monsters_Killed[$i]{name});
+}
+
 sub monKilled {
 	$monkilltime = time();
 	# if someone kills it
@@ -5485,9 +5528,10 @@ sub getEquippedItemSlot {
 }
 
 sub checkSelfCondition {
-	my $prefix = shift;
+	my ($prefix, $ai_state) = @_;
 	return 0 if (!$prefix);
 	return 0 if ($config{$prefix . "_disabled"});
+	$ai_state = AI::state() unless defined $ai_state;
 
 	return 0 if ($config{$prefix."_whenIdle"} && !AI::isIdle());
 
@@ -5501,11 +5545,11 @@ sub checkSelfCondition {
 	# *_manualAI 1 = manual only
 	# *_manualAI 2 = auto or manual
 	if ($config{$prefix . "_manualAI"} == 0 || !(defined $config{$prefix . "_manualAI"})) {
-		return 0 unless AI::state() == AI::AUTO();
+		return 0 unless $ai_state == AI::AUTO();
 	} elsif ($config{$prefix . "_manualAI"} == 1){
-		return 0 unless AI::state() == AI::MANUAL();
+		return 0 unless $ai_state == AI::MANUAL();
 	} else {
-		return 0 if AI::state() == AI::OFF();
+		return 0 if $ai_state == AI::OFF();
 	}
 
 	if ($config{$prefix . "_hp"}) {
@@ -5671,7 +5715,9 @@ sub checkSelfCondition {
 							|| $config{$prefix."_equip_midHead"}
 							|| $config{$prefix."_equip_lowHead"}
 							);
-			return 0 unless ($char->{sp} >= $skill->getSP($config{$prefix . "_lvl"} || $char->getSkillLevel($skill)));
+			my $level = $config{$prefix . "_lvl"} || $char->getSkillLevel($skill);
+			$level = 1 if ($prefix =~ /^(?:useSelf_skill|partySkill)_\d+$/ && $config{useSelf_skill_smartHeal} && !$config{$prefix . "_noSmartHeal"} && $skill->getHandle eq 'AL_HEAL');
+			return 0 unless ($char->{sp} >= $skill->getSP($level));
 			
 		} elsif ($has_homunculus && $char->{homunculus}->checkSkillOwnership($skill)) {
 			return 0 unless ($char->{homunculus}->getSkillLevel($skill));
@@ -5721,7 +5767,7 @@ sub checkSelfCondition {
 	if ($config{$prefix . "_amuletType"}) {return 0 unless $config{$prefix . "_amuletType"} eq $char->{amuletType}; }
 
 	if ($config{$prefix . "_timeout"}) { return 0 unless timeOut($ai_v{$prefix . "_time"}, $config{$prefix . "_timeout"}) }
-	if ($config{$prefix . "_inLockOnly"} > 0) { return 0 unless ($field->baseName eq $config{lockMap}); }
+	if ($config{$prefix . "_inLockOnly"} > 0) { return 0 unless ($field && $field->baseName eq $config{lockMap}); }
 	if ($config{$prefix . "_notWhileSitting"} > 0) { return 0 if ($char->{sitting}); }
 	if ($config{$prefix . "_notWhileCasting"} > 0) { return 0 if (exists $char->{casting}); }
 	if ($config{$prefix . "_whileCasting"} > 0) { return 0 unless (exists $char->{casting}); }
@@ -5729,8 +5775,8 @@ sub checkSelfCondition {
 	if ($config{$prefix . "_whileBeingCasted"}) { return 0 unless actorIsBeingCastedOn($char, $config{$prefix . "_whileBeingCasted"}); }
 	if ($config{$prefix . "_whenNoNearPartyMemberCasting"}) { return 0 if nearPartyMemberIsCasting($config{$prefix . "_whenNoNearPartyMemberCasting"}); }
 	if ($config{$prefix . "_whenNearPartyMemberCasting"}) { return 0 unless nearPartyMemberIsCasting($config{$prefix . "_whenNearPartyMemberCasting"}); }
-	if ($config{$prefix . "_notInTown"} > 0) { return 0 if ($field->isCity); }
-	if ($config{$prefix . "_inTown"} > 0) { return 0 unless ($field->isCity); }
+	if ($config{$prefix . "_notInTown"} > 0) { return 0 if ($field && $field->isCity); }
+	if ($config{$prefix . "_inTown"} > 0) { return 0 unless ($field && $field->isCity); }
 
 	my $check_not_monsters = defined $config{$prefix . "_notMonsters"} && !($prefix =~ /skillSlot/i) && !($prefix =~ /ComboSlot/i);
 	my $check_monsters = defined $config{$prefix . "_monsters"} && !($prefix =~ /skillSlot/i) && !($prefix =~ /ComboSlot/i);
@@ -5796,8 +5842,7 @@ sub checkSelfCondition {
 		foreach my $input (split / *, */, $config{$prefix."_inInventory"}) {
 			my ($itemName, $count) = $input =~ /(.*?)(?:\s+([><]=? *\d+))?$/;
 			$count = '>0' if $count eq '';
-			my $item = $char->inventory->getByName($itemName);
- 			return 0 if !inRange(!$item ? 0 : $item->{amount}, $count);
+			return 0 if !inRange($char->inventory->sumByName($itemName), $count);
 		}
 	}
 
@@ -5806,8 +5851,7 @@ sub checkSelfCondition {
 		foreach my $input (split / *, */, $config{$prefix."_inInventoryID"}) {
 			my ($itemName, $count) = $input =~ /^(.*?)(?:\s*([><]=? *\d+))?$/;
 			$count = '>0' if $count eq '';
-			my $item = $char->inventory->getByNameID($itemName);
- 			return 0 if !inRange(!$item ? 0 : $item->{amount}, $count);
+			return 0 if !inRange($char->inventory->sumByNameID($itemName), $count);
 		}
 	}
 
@@ -5884,11 +5928,11 @@ sub checkSelfCondition {
 	}
 
 	if ($config{$prefix."_inMap"}) {
-		return 0 unless (existsInList($config{$prefix . "_inMap"}, $field->baseName));
+		return 0 unless ($field && existsInList($config{$prefix . "_inMap"}, $field->baseName));
 	}
 
 	if ($config{$prefix."_notInMap"}) {
-		return 0 if (existsInList($config{$prefix . "_notInMap"}, $field->baseName));
+		return 0 if ($field && existsInList($config{$prefix . "_notInMap"}, $field->baseName));
 	}
 
 	if ($config{$prefix."_whenEquipped"}) {
@@ -5966,7 +6010,7 @@ sub checkSelfCondition {
 
 	if ($config{$prefix."_whenWater"}) {
 		my $pos = calcPosition($char);
-		return 0 unless ($field->isWater($pos->{x}, $pos->{y}));
+		return 0 unless ($field && $field->isWater($pos->{x}, $pos->{y}));
 	}
 
 	if ($config{$prefix.'_devotees'}) {
@@ -6078,6 +6122,13 @@ sub checkPlayerCondition {
 				return 0 if (!inRange(percent_hp($char->{mercenary}), $1));
 			} else {
 				return 0 if (!inRange($char->{mercenary}{hp}, $config{$prefix . "_hp"}));
+			}
+		} else {
+			return 0 unless defined $player->{hp};
+			if ($config{$prefix."_hp"} =~ /^(.*)\%$/) {
+				return 0 if (!inRange(percent_hp($player), $1));
+			} else {
+				return 0 if (!inRange($player->{hp}, $config{$prefix . "_hp"}));
 			}
 		}
 	}
@@ -6499,7 +6550,7 @@ sub closeBuyerShop {
 # Returns 1 (true) if character is located in its lockmap.
 # Returns 0 (false) if character is not located in lockmap.
 sub inLockMap {
-	if ($field->baseName eq $config{'lockMap'}) {
+	if ($field && $field->baseName eq $config{'lockMap'}) {
 		return 1;
 	} else {
 		return 0;
@@ -6723,7 +6774,7 @@ sub setCharDeleteDate {
 	}
 
 	if ($masterServer->{charDeleteDateType} == 1) { # New clients receive deleteTime as 'time remaining'
-		$deleteDate = int(time) + $deleteDate;
+		$deleteDate = int(time) + unpack('l', pack('L', $deleteDate));
 	}
 
 	$chars[$slot]{deleteDate} = getFormattedDate($deleteDate);
@@ -6879,6 +6930,7 @@ sub solveItemLink {
 	}
 
 	my ($itemstr, $infostr) = ($1, $2);
+	$infostr =~ tr/)+,\-/(*+,/ if $packetParser && exists $packetParser->{oldItemLink} && !$packetParser->{oldItemLink} && $infostr !~ /[(*]/;
 	my ($loc, $showslots, $id) = $itemstr =~ /([\d\w]{5})(\d)([\d\w]+)/;
 	my ($refine) = $infostr =~ /%([\d\w]+)/;
 	my ($itemtype) = $infostr =~ /&([\d\w]+)/;
@@ -6888,7 +6940,7 @@ sub solveItemLink {
 	};
 
 	foreach my $card (map { $_ } $infostr =~ /\(([\d\w]+)/g) {
-		$item_info->{cards} .= pack('v', fromBase62($card));
+		$item_info->{cards} .= pack($masterServer->{itemListType} ? 'V' : 'v', fromBase62($card));
 	}
 
 	foreach my $opt (map { $_ } $infostr =~ /\*([\d\w\+,]+)/g) {
@@ -6908,8 +6960,8 @@ sub solveMessage {
 	# <ITEML>.*</ITEML> to readable item name
 	# Sell<ITEML>0000y1kk&0g)00)00)00)00+05,00-01+0B,00-0m</ITEML>500k
 	# S><ITEML>0000y1nC&05)00)00+0h,00-0C+0F,00-0h</ITEML><ITEML>000021jM&01)00)00+0h,00-0N+0B,00-0g</ITEML><ITEML>000021jM&01)00)00+0f,00-02+0B,00-0e</ITEML>
-	if ($msg =~ /<ITEML>([a-zA-Z0-9%&(),+\-*]*)<\/ITEML>/) {
-		$msg =~ s/<ITEML>([a-zA-Z0-9%&(),+\-*]*)<\/ITEML>/solveItemLink($1)/eg;
+	if ($msg =~ /<ITEML>([a-zA-Z0-9%&'(),+\-*]*)<\/ITEML>/) {
+		$msg =~ s/<ITEML>([a-zA-Z0-9%&'(),+\-*]*)<\/ITEML>/solveItemLink($1)/eg;
 	}
 	Plugins::callHook('solveMessage', { msg => \$msg });
 	return $msg;

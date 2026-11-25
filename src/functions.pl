@@ -57,51 +57,75 @@ sub mainLoop {
 	$state = STATE_LOAD_PLUGINS if (!defined $state);
 
 	# Parse command input
+	Benchmark::begin("mainLoop_input") if DEBUG;
 	my $input;
-	if (defined($input = $interface->getInput(0))) {
+	if (!$interface->{headless} && defined($input = $interface->getInput(0))) {
 		Misc::checkValidity("parseInput (pre)");
 		parseInput($input);
 		Misc::checkValidity("parseInput");
 	}
+	Benchmark::end("mainLoop_input") if DEBUG;
 
 
 	if ($state == STATE_INITIALIZED && $Settings::command) {
+		Benchmark::begin("mainLoop_command") if DEBUG;
 		Commands::run($Settings::command);
 		$Settings::command = undef;
+		Benchmark::end("mainLoop_command") if DEBUG;
 	}
 
 	if ($state == STATE_INITIALIZED) {
+		Benchmark::begin("mainLoop_hook_pre") if DEBUG;
 		Plugins::callHook('mainLoop_pre');
+		Benchmark::end("mainLoop_hook_pre") if DEBUG;
 		mainLoop_initialized();
+		Benchmark::begin("mainLoop_hook_post") if DEBUG;
 		Plugins::callHook('mainLoop_post');
+		Benchmark::end("mainLoop_hook_post") if DEBUG;
 
 	} elsif ($state == STATE_LOAD_PLUGINS) {
+		Benchmark::begin("mainLoop_init") if DEBUG;
 		Log::message("$Settings::versionText\n");
 		loadPlugins();
-		return if $quit;
+		if ($quit) {
+			Benchmark::end("mainLoop_init") if DEBUG;
+			Benchmark::end('mainLoop') if DEBUG;
+			return;
+		}
 		Log::message("\n");
 		Plugins::callHook('start');
 		$state = STATE_LOAD_DATA_FILES;
+		Benchmark::end("mainLoop_init") if DEBUG;
 
 	} elsif ($state == STATE_LOAD_DATA_FILES) {
+		Benchmark::begin("mainLoop_init") if DEBUG;
 		loadDataFiles();
 		$state = STATE_INIT_NETWORKING;
+		Benchmark::end("mainLoop_init") if DEBUG;
 
 	} elsif ($state == STATE_INIT_NETWORKING) {
+		Benchmark::begin("mainLoop_init") if DEBUG;
 		initNetworking();
 		$state = STATE_INIT_PORTALS_DATABASE;
+		Benchmark::end("mainLoop_init") if DEBUG;
 
 	} elsif ($state == STATE_INIT_PORTALS_DATABASE) {
+		Benchmark::begin("mainLoop_init") if DEBUG;
 		initPortalsDatabase();
 		$state = STATE_PROMPT;
+		Benchmark::end("mainLoop_init") if DEBUG;
 
 	} elsif ($state == STATE_PROMPT) {
+		Benchmark::begin("mainLoop_init") if DEBUG;
 		promptFirstTimeInformation();
 		$state = STATE_FINAL_INIT;
+		Benchmark::end("mainLoop_init") if DEBUG;
 
 	} elsif ($state == STATE_FINAL_INIT) {
+		Benchmark::begin("mainLoop_init") if DEBUG;
 		finalInitialization();
 		$state = STATE_INITIALIZED;
+		Benchmark::end("mainLoop_init") if DEBUG;
 
 	} else {
 		die "Unknown state $state.";
@@ -109,7 +133,9 @@ sub mainLoop {
 
 	Benchmark::end('mainLoop') if DEBUG;
 	# Reload any modules that requested to be reloaded
+	Benchmark::begin("mainLoop_reload") if DEBUG;
 	Modules::reloadAllInQueue();
+	Benchmark::end("mainLoop_reload") if DEBUG;
 }
 
 sub loadPlugins {
@@ -805,6 +831,7 @@ sub initMapChangeVars {
 		delete $char->{sitting};
 		delete $char->{dead};
 		delete $char->{warp};
+		delete $char->{barterShop};
 		delete $char->{casting};
 		delete $char->{homunculus}{appear_time} if $char->{homunculus};
 		$char->inventory->onMapChange();
@@ -920,18 +947,56 @@ sub initStatVars {
 
 # This function is called every time in the main loop, when OpenKore has been
 # fully initialized.
+sub buildInterfaceTitle {
+	# Compose the current character and AI status for the console.
+	my $charName;
+	my $title;
+	$charName = "$char->{name}: " if ($char);
+	if ($net && $net->getState() == Network::IN_GAME) {
+		my ($basePercent, $jobPercent, $weight, $pos);
+
+		assert(defined $char);
+		$basePercent = sprintf("%.2f", $char->exp_base_percent);
+		$jobPercent = sprintf("%.2f",$char->exp_job_percent);
+		$weight = int($char->weight_percent) . "%";
+		$pos = " : $char->{pos_to}{x},$char->{pos_to}{y} " . $field->name if ($char->{pos_to} && $field);
+		my $aiSeq = join(",", @ai_seq);
+		# Translation Comment: Interface Title with character status
+		$title = TF("%s B%s (%s), J%s (%s) : w%s%s [%s] - %s",
+			$charName, $char->{lv}, $basePercent . '%',
+			$char->{lv_job}, $jobPercent . '%',
+			$weight, $pos, $aiSeq, $Settings::NAME);
+
+	} elsif (!$net || $net->getState() == Network::NOT_CONNECTED) {
+		# Translation Comment: Interface Title
+		$title = TF("%sNot connected - %s", $charName, $Settings::NAME);
+	} else {
+		# Translation Comment: Interface Title
+		$title = TF("%sConnecting - %s", $charName, $Settings::NAME);
+	}
+
+	my %args = (return => $title);
+	Plugins::callHook('mainLoop::setTitle',\%args);
+
+	return $args{return};
+}
+
+
 sub mainLoop_initialized {
 	Benchmark::begin("mainLoop_part1") if DEBUG;
 
 	# Handle connection states
+	Benchmark::begin("mainLoop_part1_net") if DEBUG;
 	$net->checkConnection();
 
 	if (defined $timeout{'char_login_pause'}{'time'} && timeOut($timeout{'char_login_pause'})) {
 		CharacterLogin();
 		undef $timeout{'char_login_pause'}{'time'};
 	}
+	Benchmark::end("mainLoop_part1_net") if DEBUG;
 
 	# Receive and handle data from the RO server
+	Benchmark::begin("mainLoop_part1_serverRecv") if DEBUG;
 	my $data = $net->serverRecv;
 	if (defined($data) && length($data) > 0) {
 		Benchmark::begin("parseMsg") if DEBUG;
@@ -943,8 +1008,10 @@ sub mainLoop_initialized {
 		$net->clientFlush() if (UNIVERSAL::isa($net, 'Network::XKoreProxy'));
 		Benchmark::end("parseMsg") if DEBUG;
 	}
+	Benchmark::end("mainLoop_part1_serverRecv") if DEBUG;
 
 	# Receive and handle data from the RO client
+	Benchmark::begin("mainLoop_part1_clientRecv") if DEBUG;
 	$data = $net->clientRecv;
 	if (defined($data) && length($data) > 0) {
 		my $type;
@@ -954,8 +1021,10 @@ sub mainLoop_initialized {
 			$outgoingClientMessages, $clientPacketHandler
 		);
 	}
+	Benchmark::end("mainLoop_part1_clientRecv") if DEBUG;
 
 	# GameGuard support
+	Benchmark::begin("mainLoop_part1_poseidon") if DEBUG;
 	if ($masterServer->{gameGuard} && ($net->version != 1 || ($net->version == 1 && $masterServer->{gameGuard} eq '2'))) {
 		my $instance = Poseidon::Client::getInstance();
 
@@ -970,15 +1039,20 @@ sub mainLoop_initialized {
 					$hookArgs{result} = $result;
 					$hookArgs{return} = 1;
 					Plugins::callHook('PoseidonReply', \%hookArgs);
-					return 0 if (!$hookArgs{return});
+					if (!$hookArgs{return}) {
+						Benchmark::end("mainLoop_part1_poseidon") if DEBUG;
+						Benchmark::end("mainLoop_part1") if DEBUG;
+						return 0;
+					}
 
 					$messageSender->sendToServer($result);
 				}
 			} else {
-				$instance->reset()
+				$instance->reset();
 			}
 		}
 	}
+	Benchmark::end("mainLoop_part1_poseidon") if DEBUG;
 
 	Benchmark::end("mainLoop_part1") if DEBUG;
 	Benchmark::begin("mainLoop_part2") if DEBUG;
@@ -993,21 +1067,29 @@ sub mainLoop_initialized {
 		AI::SlaveManager::iterate();
 		Benchmark::end("ai_homunculus") if DEBUG;
 		Misc::checkValidity("AI");
-		return if $quit;
+		if ($quit) {
+			Benchmark::end("mainLoop_part2") if DEBUG;
+			return;
+		}
 	}
 	Misc::checkValidity("mainLoop_part2.1");
+	Benchmark::begin("mainLoop_part2_tasks") if DEBUG;
 	$taskManager->iterate();
+	Benchmark::end("mainLoop_part2_tasks") if DEBUG;
 
 	Benchmark::end("mainLoop_part2") if DEBUG;
 	Benchmark::begin("mainLoop_part3") if DEBUG;
 
 	# Process bus events.
+	Benchmark::begin("mainLoop_part3_bus") if DEBUG;
 	$bus->iterate() if ($bus);
+	Benchmark::end("mainLoop_part3_bus") if DEBUG;
 	Misc::checkValidity("mainLoop_part2.2");
 
 
 	###### Other stuff that's run in the main loop #####
 
+	Benchmark::begin("mainLoop_part3_autoRestart") if DEBUG;
 	if ($config{'autoRestart'} && time - $KoreStartTime > $config{'autoRestart'}
 	 && $net->getState() == Network::IN_GAME && !AI::inQueue(qw/attack take items_take/)) {
 		message T("\nAuto-restarting!!\n"), "system";
@@ -1031,11 +1113,13 @@ sub mainLoop_initialized {
 		undef $conState_tries;
 		initRandomRestart();
 	}
+	Benchmark::end("mainLoop_part3_autoRestart") if DEBUG;
 
 	Misc::checkValidity("mainLoop_part2.3");
 
 	# Automatically switch to a different config file
 	# based on certain conditions
+	Benchmark::begin("mainLoop_part3_autoConfChange") if DEBUG;
 	if ($net->getState() == Network::IN_GAME && timeOut($AI::Timeouts::autoConfChangeTime, 0.5)
 	 && !AI::inQueue(qw/attack take items_take/)) {
 		my $selected;
@@ -1088,50 +1172,29 @@ sub mainLoop_initialized {
 
 		$AI::Timeouts::autoConfChangeTime = time;
 	}
+	Benchmark::end("mainLoop_part3_autoConfChange") if DEBUG;
 
 	#processStatisticsReporting() unless ($sys{sendAnonymousStatisticReport} eq "0");
 
 	Misc::checkValidity("mainLoop_part2.4");
 
-	if (timeOut($timeout{setTitle})) {
+	Benchmark::begin("mainLoop_part3_setTitle") if DEBUG;
+	if (!$interface->{headless} && timeOut($timeout{setTitle})) {
 		$timeout{setTitle}{time} = time;
 
-		# Set interface title
-		my $charName;
-		my $title;
-		$charName = "$char->{name}: " if ($char);
-		if ($net->getState() == Network::IN_GAME) {
-			my ($basePercent, $jobPercent, $weight, $pos);
+		my $title = buildInterfaceTitle();
 
-			assert(defined $char);
-			$basePercent = sprintf("%.2f", $char->exp_base_percent);
-			$jobPercent = sprintf("%.2f",$char->exp_job_percent);
-			$weight = int($char->weight_percent) . "%";
-			$pos = " : $char->{pos_to}{x},$char->{pos_to}{y} " . $field->name if ($char->{pos_to} && $field);
-			my $aiSeq = join(",", @ai_seq);
-			# Translation Comment: Interface Title with character status
-			$title = TF("%s B%s (%s), J%s (%s) : w%s%s [%s] - %s",
-				$charName, $char->{lv}, $basePercent . '%',
-				$char->{lv_job}, $jobPercent . '%',
-				$weight, $pos, $aiSeq, $Settings::NAME);
-
-		} elsif ($net->getState() == Network::NOT_CONNECTED) {
-			# Translation Comment: Interface Title
-			$title = TF("%sNot connected - %s", $charName, $Settings::NAME);
-		} else {
-			# Translation Comment: Interface Title
-			$title = TF("%sConnecting - %s", $charName, $Settings::NAME);
-		}
-
-		my %args = (return => $title);
-		Plugins::callHook('mainLoop::setTitle',\%args);
-
-		if (%ai_v && exists $ai_v{temp} && exists $ai_v{temp}{lastTitle} && defined $ai_v{temp}{lastTitle} && $ai_v{temp}{lastTitle} eq $args{return}) {
+		if (%ai_v && exists $ai_v{temp} && exists $ai_v{temp}{lastTitle} && defined $ai_v{temp}{lastTitle} && $ai_v{temp}{lastTitle} eq $title) {
 			# Title is the same as last time, skip setting it again to avoid unnecessary overhead.
+			Benchmark::end("mainLoop_part3_setTitle") if DEBUG;
+			Benchmark::end("mainLoop_part3") if DEBUG;
 			return;
 		}
-		$interface->title($args{return});
+		Benchmark::begin("mainLoop_part3_setTitle_interface") if DEBUG;
+		$interface->title($title);
+		Benchmark::end("mainLoop_part3_setTitle_interface") if DEBUG;
 	}
+	Benchmark::end("mainLoop_part3_setTitle") if DEBUG;
 
 	Misc::checkValidity("mainLoop_part3");
 	Benchmark::end("mainLoop_part3") if DEBUG;

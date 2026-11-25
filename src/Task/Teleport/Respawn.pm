@@ -47,7 +47,6 @@ sub canUseSkill {
 	return 0 if $self->isTeleportSkillSuppressedByStatus;
 	return 0 if Misc::isTeleportSkillBlockedOnMap($field->baseName);
 	return 0 if defined $config{'teleportAuto_useItemForRespawn'} && $config{'teleportAuto_useItemForRespawn'} == 1;
-	return 0 if defined $config{'teleportAuto_useSkill'} && $config{'teleportAuto_useSkill'} == 0;
 	return 0 unless ($self->{actor}->getSkillLevel(new Skill(handle => 'AL_TELEPORT')) == 2);
 	return $self->hasEnoughSPForTeleportSkill(2);
 }
@@ -56,19 +55,17 @@ sub canUseSkill {
 sub isEquipNeededToTeleport {
 	my ($self) =  @_;
 	return 0 unless ($self->{actor}->inventory->isReady());
+	return 0 if $self->isTeleportSkillSuppressedByStatus;
 	return 0 if Misc::isTeleportSkillBlockedOnMap($field->baseName);
 	return 0 if defined $config{'teleportAuto_useItemForRespawn'} && $config{'teleportAuto_useItemForRespawn'} == 1;
+	return 0 unless $self->hasEnoughSPForTeleportSkill(2);
 	return Actor::Item::scanConfigAndCheck('teleportAuto_equip');
 }
 
 sub useSkill {
 	my ($self) =  @_;
-	# We have the teleport skill, and should use it
-	my $skill = new Skill(handle => 'AL_TELEPORT');
-
 	debug "Teleport $self->{actor} - Sending Teleport using Level 2\n", "teleport";
-	main::ai_skillUse($skill->getHandle(), 2, 0, 0, $self->{actor}->{ID});
-	$timeout{ai_teleport}{time} = time;
+	$self->queueTeleportSkill(2);
 }
 
 sub useEquip {

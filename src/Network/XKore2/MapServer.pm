@@ -16,6 +16,7 @@ package Network::XKore2::MapServer;
 
 use strict;
 use Scalar::Util qw(weaken);
+use Math::BigInt;
 use Globals qw(
 	$char $net $field %statusHandle @skillsID @itemsID %items
 	$portalsList $npcsList $monstersList $playersList $petsList
@@ -337,18 +338,20 @@ sub send_friends_list {
 	my ($self, $client) = @_;
 	my $data = undef;
 	my ($friendMsg, $friendOnlineMsg);
+	my $entry_size = ($Globals::packetParser && $Globals::packetParser->{friendListEntrySize}) || $self->{recvPacketParser}{friendListEntrySize} || 32;
 	foreach my $ID (@friendsID) {
 		next if !defined($ID) || !$friends{$ID};
-		$friendMsg .= pack('a4 a4 Z24',
+		$friendMsg .= pack('a4 a4',
 			$friends{$ID}{accountID},
-			$friends{$ID}{charID},
-			stringToBytes($friends{$ID}{name}));
+			$friends{$ID}{charID});
+		$friendMsg .= pack('Z24', stringToBytes($friends{$ID}{name})) if $entry_size == 32;
 		if ($friends{$ID}{online}) {
 			$friendOnlineMsg .= pack('C2 a4 a4 C',
 				0x06, 0x02,
 				$friends{$ID}{accountID},
 				$friends{$ID}{charID},
 				0);
+			$friendOnlineMsg .= pack('Z24', stringToBytes($friends{$ID}{name})) if ($self->{rpackets}{'0206'}{length} || 0) == 35;
 		};
 	}
 	$data = pack('C2 v', 0x01, 0x02, length($friendMsg) + 4) . $friendMsg;
@@ -551,8 +554,8 @@ sub send_player_info {
 	# Send spirit sphere information
 	$data  = pack('C2 a4 v', 0xD0, 0x01, $char->{ID}, $char->{spirits}) if ($char->{spirits});
 	# Send exp-required-to-level-up info
-	$data .= pack('C2 v V', 0xB1, 0x00, 22, $char->{exp_max});
-	$data .= pack('C2 v V', 0xB1, 0x00, 23, $char->{exp_job_max});
+	$data .= pack('C2 v V', 0xB1, 0x00, 22, Math::BigInt->new($char->{exp_max} || 0)->bmod('4294967296')->bstr());
+	$data .= pack('C2 v V', 0xB1, 0x00, 23, Math::BigInt->new($char->{exp_job_max} || 0)->bmod('4294967296')->bstr());
 	$client->send($data);
 
 	# Send skill information

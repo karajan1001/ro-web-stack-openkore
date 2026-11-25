@@ -431,7 +431,7 @@ sub ai_slave_getAggressives {
 		next if (!Misc::slave_checkMonsterCleanness($slave, $ID));
 		# TODO: Is there any situation where we should use calcPosFromPathfinding or calcPosFromTime here?
 		my $pos = calcPosition($monster);
-		next if (blockDistance($char->position, $pos) > ($config{$slave->{configPrefix}.'followDistanceMax'} + $config{$slave->{configPrefix}.'attackMaxDistance'}));
+		next if (blockDistance($char->position, $pos) > ($config{$slave->{configPrefix}.'followAttackDistance'} || $config{$slave->{configPrefix}.'followDistanceMax'}));
 
 		if (Misc::is_aggressive_slave($slave, $monster, $control, $type, $party)) {
 			if ($wantArray) {
@@ -505,6 +505,7 @@ sub ai_route { $char->route(@_) }
 sub ai_sellAutoCheck {
 	for my $item (@{$char->inventory}) {
 		next if ($item->{equipped} || $item->{unsellable});
+		next if ($config{sellAuto_keepEnhanced} && $item->isEnhanced);
 		my $control = Misc::items_control($item->{name}, $item->{nameID});
 		if ($control->{sell} && $item->{amount} > $control->{keep}) {
 			return 1;
@@ -656,6 +657,11 @@ sub StorageSellBuy_aiClear {
 }
 
 sub shouldStartAutoStorage {
+	# Optional startup scan throttling; zero retains the original per-tick behavior.
+	if (($timeout{ai_storageAuto_check}{timeout} // 0) > 0) {
+		return unless timeOut($timeout{ai_storageAuto_check});
+		$timeout{ai_storageAuto_check}{time} = time;
+	}
 	return unless (ai_canOpenStorage());
 	return unless ($config{storageAuto});
 	return unless ($config{'storageAuto_npc'} ne "" || $config{'storageAuto_useChatCommand'} || $config{'storageAuto_useItem'});
@@ -771,6 +777,11 @@ sub shouldStartAutoStorage {
 }
 
 sub shouldStartAutoSell {
+	# Optional startup scan throttling; zero retains the original per-tick behavior.
+	if (($timeout{ai_sellAuto_check}{timeout} // 0) > 0) {
+		return unless timeOut($timeout{ai_sellAuto_check});
+		$timeout{ai_sellAuto_check}{time} = time;
+	}
 	return unless ($config{'sellAuto'});
 	return unless ($config{'sellAuto_npc'} ne "");
 	
@@ -798,6 +809,11 @@ sub shouldStartAutoSell {
 }
 
 sub shouldStartAutoBuy {
+	# Optional startup scan throttling; zero retains the original per-tick behavior.
+	if (($timeout{ai_buyAuto_check}{timeout} // 0) > 0) {
+		return unless timeOut($timeout{ai_buyAuto_check});
+		$timeout{ai_buyAuto_check}{time} = time;
+	}
 	my %plugin_args = ( return => 0 );
 	Plugins::callHook('AI_buy_auto_start' => \%plugin_args);
 	return $plugin_args{return_result} if ($plugin_args{return});
@@ -809,6 +825,7 @@ sub shouldStartAutoBuy {
 	undef $ai_v{'temp'}{'found'};
 	for(my $i = 0; exists $config{"buyAuto_$i"}; $i++) {
 		next if (!$config{"buyAuto_$i"} || !$config{"buyAuto_$i"."_npc"} || $config{"buyAuto_${i}_disabled"});
+		next if ($config{"buyAuto_${i}_price"} && $char->{zeny} < $config{"buyAuto_${i}_price"});
 		my $amount;
 		if ($config{"buyAuto_$i"} =~ /^\d{3,}$/) {
 			$amount = $char->inventory->sumByNameID($config{"buyAuto_$i"}, $config{"buyAuto_${i}_onlyIdentified"});

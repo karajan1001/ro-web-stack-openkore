@@ -160,6 +160,7 @@ our @EXPORT_OK = qw(%sys %options);
 #
 # If the arguments are not correct, then an ArgumentException is thrown.
 sub parseArguments {
+	$options{headless} = 0;
 	# my %options;
 
 	undef $fields_folder;
@@ -199,6 +200,7 @@ sub parseArguments {
 		'sys=s',			\$sys_file,
 
 		'interface=s',		\$interface,
+		'headless',		\$options{headless},
 		'lockdown',			\$lockdown,
 		'ai=s',				\$starting_ai,
 		'command=s',		\$command,
@@ -207,6 +209,10 @@ sub parseArguments {
 
 		'no-connect',		\$no_connect
 	);
+
+	if ($options{headless} && ($^O ne 'MSWin32' || $interface ne 'Console')) {
+		ArgumentException->throw('--headless requires the Windows Console interface.');
+	}
 
 	if ($options{control}) {
 		setControlFolders(split($pathDelimiter, $options{control}));
@@ -268,14 +274,26 @@ sub update_log_filenames {
 	push @logAppend, "_$servers[$config{server}]{name}" if $config{logAppendServer}   && $config{server};
 	my $logAppend = join '', @logAppend;
 
-	$chat_log_file    = substr( $base_chat_log_file,    0, length( $base_chat_log_file ) - 4 ) . "$logAppend.txt";
-	$console_log_file = substr( $base_console_log_file, 0, length( $base_console_log_file ) - 4 ) . "$logAppend.txt";
-	$storage_log_file = substr( $base_storage_log_file, 0, length( $base_storage_log_file ) - 4 ) . "$logAppend.txt";
+	$chat_log_file    = _append_log_suffix($base_chat_log_file, $logAppend);
+	$console_log_file = _append_log_suffix($base_console_log_file, $logAppend);
+	$storage_log_file = _append_log_suffix($base_storage_log_file, $logAppend);
 	$shop_log_file    = substr( $base_shop_log_file,    0, length( $base_shop_log_file ) - 4 ) . "$logAppend.txt";
 	$monster_log_file = substr( $base_monster_log_file, 0, length( $base_monster_log_file ) - 4 ) . "$logAppend.txt";
 	$player_log_file = substr( $base_player_log_file,   0, length( $base_player_log_file ) - 4 ) . "$logAppend.txt";
 	$item_log_file    = substr( $base_item_log_file,    0, length( $base_item_log_file ) - 4 ) . "$logAppend.txt";
 	$dead_log_file    = substr( $base_dead_log_file,    0, length( $base_dead_log_file ) - 4 ) . "$logAppend.txt";
+}
+
+sub _append_log_suffix {
+	my ($path, $suffix) = @_;
+	return $path if $suffix eq '';
+
+	my (undef, undef, $filename) = File::Spec->splitpath($path);
+	return $path if $filename eq '';
+
+	my ($extension) = $filename =~ /.+(\.[^.]+)\z/s;
+	substr($path, length($path) - length($extension // ''), 0, $suffix);
+	return $path;
 }
 
 ##
@@ -335,6 +353,7 @@ sub getUsageText {
 
 		Other options:
 		--interface=NAME          Which interface to use at startup.
+		--headless                Run the Windows console interface without a window.
 		--lockdown                Disable potentially insecure features.
 		--ai                      Starting AI mode (on, manual, off) (default: on)
 		--command=COMMAND         Initial command to place on the AI queue

@@ -42,20 +42,33 @@ use Task::TalkNPC;
 use Task::UseSkill;
 use Task::ErrorReport;
 use Utils::Exceptions;
+use Utils::Benchmark;
 
 # This is the main function from which the rest of the AI
 # will be invoked.
 sub iterate {
 	Benchmark::begin("ai_prepare") if DEBUG;
+	Benchmark::begin("ai_prepare_wipe") if DEBUG;
 	processWipeOldActors();
+	Benchmark::end("ai_prepare_wipe") if DEBUG;
+	Benchmark::begin("ai_prepare_avoid") if DEBUG;
 	processActorAvoid();
+	Benchmark::end("ai_prepare_avoid") if DEBUG;
+	Benchmark::begin("ai_prepare_playerInfo") if DEBUG;
 	processGetPlayerInfo();
+	Benchmark::end("ai_prepare_playerInfo") if DEBUG;
+	Benchmark::begin("ai_prepare_misc") if DEBUG;
 	processMisc();
+	Benchmark::end("ai_prepare_misc") if DEBUG;
+	Benchmark::begin("ai_prepare_portals") if DEBUG;
 	processReAddMissingPortals();
 	processPortalRecording();
+	Benchmark::end("ai_prepare_portals") if DEBUG;
 	Benchmark::end("ai_prepare") if DEBUG;
 
+	Benchmark::begin("ai_hook_start") if DEBUG;
 	Plugins::callHook('AI_start', {state => AI::state()});
+	Benchmark::end("ai_hook_start") if DEBUG;
 
 	return if AI::state() == AI::OFF();
 	if ($net->clientAlive() && !$sentWelcomeMessage && timeOut($timeout{welcomeText})) {
@@ -66,26 +79,41 @@ sub iterate {
 
 	##### MANUAL AI STARTS HERE #####
 
+	Benchmark::begin("ai_hook_premanual") if DEBUG;
 	Plugins::callHook('AI_pre/manual');
+	Benchmark::end("ai_hook_premanual") if DEBUG;
 	Benchmark::begin("AI (part 1)") if DEBUG;
-	return if processClientSuspend();
+	if (processClientSuspend()) {
+		Benchmark::end("AI (part 1)") if DEBUG;
+		return;
+	}
 	Benchmark::begin("AI (part 1.1)") if DEBUG;
+	Benchmark::begin("AI (part 1.1 look)") if DEBUG;
 	processLook();
 	$char->processTask('NPC');
+	Benchmark::end("AI (part 1.1 look)") if DEBUG;
+	Benchmark::begin("AI (part 1.1 items)") if DEBUG;
 	processEquip();
 	processDrop();
 	processEscapeUnknownMaps();
+	Benchmark::end("AI (part 1.1 items)") if DEBUG;
 	Benchmark::end("AI (part 1.1)") if DEBUG;
 	Benchmark::begin("AI (part 1.2)") if DEBUG;
+	Benchmark::begin("AI (part 1.2 tasks)") if DEBUG;
 	$char->processTask("sitting");
 	$char->processTask("standing");
 	$char->processTask("teleport");
+	Benchmark::end("AI (part 1.2 tasks)") if DEBUG;
 	AI::Attack::process();
 	Benchmark::end("AI (part 1.2)") if DEBUG;
 	Benchmark::begin("AI (part 1.3)") if DEBUG;
+	Benchmark::begin("AI (part 1.3 skill)") if DEBUG;
 	processSkillUse();
 	processAutoCommandUse();
+	processSitAuto() if AI::state() == AI::AUTO() && $field;
 	processAutoAttack() if AI::state() == AI::AUTO();
+	Benchmark::end("AI (part 1.3 skill)") if DEBUG;
+	Benchmark::begin("AI (part 1.3 move)") if DEBUG;
 	$char->processTask("route", onError => sub {
 		my ($task, $error) = @_;
 		AI::Attack::note_approach_route_failure($task, $error);
@@ -96,6 +124,7 @@ sub iterate {
 	});
 	processTake();
 	$char->processTask('move');
+	Benchmark::end("AI (part 1.3 move)") if DEBUG;
 	Benchmark::end("AI (part 1.3)") if DEBUG;
 
 	Benchmark::begin("AI (part 1.4)") if DEBUG;
@@ -105,7 +134,9 @@ sub iterate {
 	Benchmark::begin("ai_autoSkillUse") if DEBUG;
 	processAutoSkillUse();
 	Benchmark::end("ai_autoSkillUse") if DEBUG;
+	Benchmark::begin("ai_feed") if DEBUG;
 	processFeed();
+	Benchmark::end("ai_feed") if DEBUG;
 	Benchmark::end("AI (part 1.4)") if DEBUG;
 
 	Benchmark::end("AI (part 1)") if DEBUG;
@@ -114,12 +145,16 @@ sub iterate {
 
 	Misc::checkValidity("AI part 1");
 	return unless AI::state() == AI::AUTO();
+	return unless $field;
 
 
 	##### AUTOMATIC AI STARTS HERE #####
 
+	Benchmark::begin("ai_hook_pre") if DEBUG;
 	Plugins::callHook('AI_pre', {state => AI::state()});
+	Benchmark::end("ai_hook_pre") if DEBUG;
 	Benchmark::begin("AI (part 2)") if DEBUG;
+	Benchmark::begin("AI (part 2.1)") if DEBUG;
 
 	ChatQueue::processFirst;
 
@@ -131,12 +166,15 @@ sub iterate {
 	processGuildAutoDeny();
 
 	Misc::checkValidity("AI part 1.1");
+	Benchmark::end("AI (part 2.1)") if DEBUG;
+	Benchmark::begin("AI (part 2.2)") if DEBUG;
 	#processAutoBreakTime(); moved to a plugin
 	processDead();
 	processTransferItems();
 	processCartAdd();
 	processCartGet();
 	processAutoMakeArrow();
+	Benchmark::end("AI (part 2.2)") if DEBUG;
 	Benchmark::end("AI (part 2)") if DEBUG;
 	Misc::checkValidity("AI part 2");
 
@@ -154,7 +192,9 @@ sub iterate {
 	Misc::checkValidity("AI (autocart)");
 	Benchmark::end("AI (part 3.1)") if DEBUG;
 
+	Benchmark::begin("ai_hook_middle") if DEBUG;
 	Plugins::callHook('AI_middle', {state => AI::state()});
+	Benchmark::end("ai_hook_middle") if DEBUG;
 
 	Benchmark::begin("AI (part 3.2)") if DEBUG;
 	processLockMap();
@@ -174,15 +214,22 @@ sub iterate {
 	Benchmark::end("AI (part 3)") if DEBUG;
 
 	Benchmark::begin("AI (part 4)") if DEBUG;
+	Benchmark::begin("AI (part 4.1)") if DEBUG;
 	processPartySkillUse();
 	processMonsterSkillUse();
+	Benchmark::end("AI (part 4.1)") if DEBUG;
 
 	Misc::checkValidity("AI part 3");
+	Benchmark::begin("AI (part 4.2)") if DEBUG;
 	processAutoEquip();
 	processAutoAttack();
+	Benchmark::end("AI (part 4.2)") if DEBUG;
+	Benchmark::begin("AI (part 4.3)") if DEBUG;
 	processItemsTake();
 	processItemsAutoGather();
 	processItemsGather();
+	Benchmark::end("AI (part 4.3)") if DEBUG;
+	Benchmark::begin("AI (part 4.4)") if DEBUG;
 	processAutoTeleport();
 	processAllowedMaps();
 	processAutoResponse();
@@ -192,11 +239,13 @@ sub iterate {
 	processAutoBuyerShopOpen();
 	processRepairAuto();
 	processSendIgnoreAll();
+	Benchmark::end("AI (part 4.4)") if DEBUG;
 	Benchmark::end("AI (part 4)") if DEBUG;
 
 
 	##########
 
+	Benchmark::begin("AI (part 5)") if DEBUG;
 	# DEBUG CODE
 	if (timeOut($ai_v{time}, 2) && $config{'debug'} >= 2) {
 		my $len = @ai_seq_args;
@@ -218,9 +267,12 @@ sub iterate {
 		debug "Executing queued command: $execCommand\n", "ai";
 		Commands::run($execCommand);
 	}
+	Benchmark::end("AI (part 5)") if DEBUG;
 
 
+	Benchmark::begin("ai_hook_post") if DEBUG;
 	Plugins::callHook('AI_post', {state => AI::state()});
+	Benchmark::end("ai_hook_post") if DEBUG;
 }
 
 
@@ -495,7 +547,7 @@ sub processPortalRecording {
 	my $first = 1;
 	my ($foundID, $smallDist, $dist);
 
-	if (!$field->baseName) {
+	if (!$field || !$field->baseName) {
 		debug "[processPortalRecording] Field name not known - abort\n", "portalRecord";
 		return;
 	}
@@ -1176,10 +1228,10 @@ sub processDead {
 			}
 		}
 
-	} elsif (AI::action() ne "dead" && !$char->{dead} && $char->statusActive('Dead')) {
+	} elsif (AI::action() ne "dead" && !$char->{dead} && ($char->{resurrected} || $char->statusActive('Dead'))) {
 		my $current_action = AI::action();
 		$current_action = defined $current_action && $current_action ne '' ? $current_action : 'none';
-		debug "[processDead] Cleared stale Dead status after respawn while current AI action was '$current_action'; the dead queue was displaced before normal cleanup ran.\n";
+		debug "[processDead] Cleared stale death state while current AI action was '$current_action'.\n";
 		AI::clear('dead');
 		$char->setStatus('Dead', 0);
 		$char->{resurrected} = 0 if $char->{resurrected};
@@ -1977,6 +2029,7 @@ sub processAutoSell {
 			@sellList = ();
 			for my $item (@{$char->inventory}) {
 				next if ($item->{equipped} || !$item->{sellable});
+				next if ($config{sellAuto_keepEnhanced} && $item->isEnhanced);
 
 				my $control = items_control($item->{name}, $item->{nameID});
 
@@ -2050,6 +2103,17 @@ sub processAutoBuy {
 				delete $args->{sentBuyPacket_time};
 				delete $args->{recv_buy_packet};
 				$args->{recv_buy_packet_time} = time;
+				if (delete $args->{recv_buy_packet_overweight} && !$args->{weight_recovery} && (!defined $config{buyAuto_freeWeightOnOverweight} || $config{buyAuto_freeWeightOnOverweight})) {
+					if ($config{storageAuto} && ($config{storageAuto_npc} || $config{storageAuto_useChatCommand} || $config{storageAuto_useItem}) && ai_storageAutoCheck()) {
+						$args->{weight_recovery} = 1;
+						AI::queue("storageAuto", {forcedByBuy => 1});
+						Plugins::callHook('AI_storage_auto_queued');
+					} elsif ($config{sellAuto} && $config{sellAuto_npc} && ai_sellAutoCheck()) {
+						$args->{weight_recovery} = 1;
+						AI::queue("sellAuto", {forcedByBuy => 1});
+						Plugins::callHook('AI_sell_auto_queued');
+					}
+				}
 
 			} elsif (timeOut($args->{sentBuyPacket_time}, $timeout{ai_buyAuto_wait_after_packet_giveup}{timeout})) {
 				$args->{'error'} = 'Did not received the buy result from server after buy packet was sent';
@@ -2071,7 +2135,7 @@ sub processAutoBuy {
 
 			delete $args->{index};
 			for (my $i = 0; exists $config{"buyAuto_$i"}; $i++) {
-				next if (!$config{"buyAuto_$i"} || $config{"buyAuto_${i}_disabled"});
+				next if (!$config{"buyAuto_$i"} || !$config{"buyAuto_${i}_npc"} || $config{"buyAuto_${i}_disabled"});
 				next if ($config{"buyAuto_${i}_maxBase"} =~ /^\d{1,}$/ && $char->{lv} > $config{"buyAuto_${i}_maxBase"});
 				next if ($config{"buyAuto_${i}_minBase"} =~ /^\d{1,}$/ && $char->{lv} < $config{"buyAuto_${i}_minBase"});
 				# did we already fail to do this buyAuto slot? (only fails in this way if the item is nonexistant)
@@ -3006,13 +3070,28 @@ sub processAutoItemUse {
 
 ##### AUTO-SKILL USE #####
 sub processAutoSkillUse {
+	my ($slave) = @_;
+	# Slave and player checks use independent clocks; zero means no throttling.
+	if (($timeout{ai_selfSkill_check}{timeout} // 0) > 0) {
+		my $check = $slave ? ($slave->{ai_selfSkill_check} ||= {}) : $timeout{ai_selfSkill_check};
+		$check->{timeout} = $timeout{ai_selfSkill_check}{timeout} if $slave;
+		return unless timeOut($check);
+		$check->{time} = time;
+	}
 	return if ($char->{muted});
-	if (AI::isIdle() || AI::is(qw(route mapRoute follow sitAuto take items_gather items_take attack teleport) ) || (AI::action() eq "skill_use" && AI::args()->{tag} eq "attackSkill")) {
+	if (!$slave) {
+		my $routeIndex = AI::findAction("route");
+		return if (defined $routeIndex && AI::args($routeIndex)->getSubtask && AI::args($routeIndex)->getSubtask->isa('Task::TalkNPC'));
+	}
+	if ($slave ? ($slave->isIdle() || $slave->is(qw(route move follow attack))) : (AI::isIdle() || AI::is(qw(route mapRoute follow sitAuto take items_gather items_take attack teleport)) || (AI::action() eq "skill_use" && AI::args()->{tag} eq "attackSkill"))) {
 		my %self_skill;
 		for (my $i = 0; exists $config{"useSelf_skill_$i"}; $i++) {
-			if ($config{"useSelf_skill_$i"} && checkSelfCondition("useSelf_skill_$i")) {
+			next unless $config{"useSelf_skill_$i"};
+			my $skill = Skill->new(auto => $config{"useSelf_skill_$i"});
+			next unless ($slave || $char)->checkSkillOwnership($skill);
+			if (checkSelfCondition("useSelf_skill_$i", $slave ? $slave->{slave_AI} : undef)) {
 				$ai_v{"useSelf_skill_$i"."_time"} = time;
-				$self_skill{skillObject} = Skill->new(auto => $config{"useSelf_skill_$i"});
+				$self_skill{skillObject} = $skill;
 				$self_skill{ID} = $self_skill{skillObject}->getHandle();
 				$self_skill{owner} = $self_skill{skillObject}->getOwner();
 				unless ($self_skill{ID}) {
@@ -3021,7 +3100,7 @@ sub processAutoSkillUse {
 					configModify("useSelf_skill_${i}_disabled", 1);
 					next;
 				}
-				$self_skill{lvl} = $config{"useSelf_skill_$i"."_lvl"} || $char->getSkillLevel($self_skill{skillObject});
+				$self_skill{lvl} = $config{"useSelf_skill_$i"."_lvl"} || ($slave || $char)->getSkillLevel($self_skill{skillObject});
 				$self_skill{maxCastTime} = $config{"useSelf_skill_$i"."_maxCastTime"};
 				$self_skill{minCastTime} = $config{"useSelf_skill_$i"."_minCastTime"};
 				$self_skill{prefix} = "useSelf_skill_$i";
@@ -3069,15 +3148,25 @@ sub processAutoSkillUse {
 
 ##### PARTY-SKILL USE #####
 sub processPartySkillUse {
+	my ($slave) = @_;
+	# Slave and player checks use independent clocks; zero means no throttling.
+	if (($timeout{ai_partySkill_check}{timeout} // 0) > 0) {
+		my $check = $slave ? ($slave->{ai_partySkill_check} ||= {}) : $timeout{ai_partySkill_check};
+		$check->{timeout} = $timeout{ai_partySkill_check}{timeout} if $slave;
+		return unless timeOut($check);
+		$check->{time} = time;
+	}
 	return if ($char->{muted});
-	if (AI::isIdle() || AI::is(qw(route mapRoute follow sitAuto take items_gather items_take attack move))){
-		my $realMyPos = calcPosFromPathfinding($field, $char);
+	if ($slave ? ($slave->isIdle() || $slave->is(qw(route move follow attack))) : (AI::isIdle() || AI::is(qw(route mapRoute follow sitAuto take items_gather items_take attack move)))) {
+		my $realMyPos = calcPosFromPathfinding($field, $slave || $char);
 		my %party_skill;
 		PARTYSKILL:
 		for (my $i = 0; exists $config{"partySkill_$i"}; $i++) {
 			next if (!$config{"partySkill_$i"});
-			next unless checkSelfCondition("partySkill_$i");
-			$party_skill{skillObject} = Skill->new(auto => $config{"partySkill_$i"});
+			my $skill = Skill->new(auto => $config{"partySkill_$i"});
+			next unless ($slave || $char)->checkSkillOwnership($skill);
+			next unless checkSelfCondition("partySkill_$i", $slave ? $slave->{slave_AI} : undef);
+			$party_skill{skillObject} = $skill;
 			$party_skill{owner} = $party_skill{skillObject}->getOwner;
 
 			foreach my $ID ($accountID, @slavesID, @playersID) {
@@ -3107,11 +3196,25 @@ sub processPartySkillUse {
 				if (defined($config{"partySkill_$i"."_dist"}) && defined($config{"partySkill_$i"."_maxDist"})) { $party_skill_dist = $config{"partySkill_$i"."_dist"} . ".." . $config{"partySkill_$i"."_maxDist"};}
 				my $realActorPos = calcPosFromPathfinding($field, $player);
 				my $distance = blockDistance($realMyPos, $realActorPos);
-				next unless ($party_skill{owner}{ID} eq $player->{ID} || inRange($distance, $party_skill_dist));
+				unless ($party_skill{owner}{ID} eq $player->{ID} || inRange($distance, $party_skill_dist)) {
+					my (undef, $max, $inclusive) = getRange($party_skill_dist);
+					$max-- if defined($max) && !$inclusive;
+					if ($config{"partySkill_${i}_moveToTarget"} && !$config{"partySkill_${i}_isSelfSkill"}
+						&& $party_skill{owner}{ID} eq $char->{ID} && (AI::isIdle() || AI::is(qw(sitAuto follow)))
+						&& defined($max) && $max >= 0 && $distance > $max
+						&& timeOut($ai_v{"partySkill_${i}_move_time"}{$ID}, $timeout{ai_move_giveup}{timeout})
+						&& checkPlayerCondition("partySkill_${i}_target", $ID)) {
+						$ai_v{"partySkill_${i}_move_time"}{$ID} = time;
+						ai_route($field->baseName, $realActorPos->{x}, $realActorPos->{y}, noMapRoute => 1, noSitAuto => 1, distFromGoal => $max);
+						stand() if $char->{sitting};
+						return;
+					}
+					next;
+				}
 				next unless (checkPlayerCondition("partySkill_$i"."_target", $ID));
 
 				$party_skill{ID} = $party_skill{skillObject}->getHandle;
-				$party_skill{lvl} = $config{"partySkill_$i"."_lvl"} || $char->getSkillLevel($party_skill{skillObject});
+				$party_skill{lvl} = $config{"partySkill_$i"."_lvl"} || ($slave || $char)->getSkillLevel($party_skill{skillObject});
 				$party_skill{target} = $player->{name};
 				$party_skill{targetActor} = $player;
 				$party_skill{x} = $realActorPos->{x};
@@ -3165,7 +3268,7 @@ sub processPartySkillUse {
 			$party_skill{lvl} = $smartHeal_lv;
 		}
 		if (defined $party_skill{targetID}) {
-			debug qq~Party Skill used ($party_skill{target}) Skills Used: $config{$party_skill{prefix}} (lvl $party_skill{lvl})\n~, "skill";
+			debug qq~Party Skill used ($party_skill{target}) Skills Used: $config{$party_skill{prefix}} (lvl $party_skill{lvl})\n~, "skill" if Log::debugEnabled("skill");
 			ai_skillUse2(
 				$party_skill{skillObject},
 				$party_skill{lvl},
@@ -3180,11 +3283,16 @@ sub processPartySkillUse {
 
 ##### MONSTER SKILL USE #####
 sub processMonsterSkillUse {
+	# Zero disables this optional scan interval and preserves stock scheduling.
+	if (($timeout{ai_monsterSkill_check}{timeout} // 0) > 0) {
+		return unless timeOut($timeout{ai_monsterSkill_check});
+		$timeout{ai_monsterSkill_check}{time} = time;
+	}
 	return if ($char->{muted});
 	if (AI::isIdle() || AI::is(qw(route mapRoute follow sitAuto take items_gather items_take attack move))) {
-		my $i = 0;
-		my $prefix = "monsterSkill_$i";
-		while ($config{$prefix}) {
+		for (my $i = 0; exists $config{"monsterSkill_$i"}; $i++) {
+			my $prefix = "monsterSkill_$i";
+			next unless $config{$prefix};
 			# monsterSkill can be used on any monster that we could
 			# attackAuto
 			for my $monster (@$monstersList) {
@@ -3207,8 +3315,6 @@ sub processMonsterSkillUse {
 					last;
 				}
 			}
-			$i++;
-			$prefix = "monsterSkill_$i";
 		}
 	}
 }
@@ -3271,6 +3377,7 @@ sub processAutoEquip {
 
 ##### AUTO-ATTACK #####
 sub processAutoAttack {
+	return if (!$field);
 	my $attackAuto = getAttackAutoMode();
 	return if defined $attackAuto && $attackAuto == -1;
 
@@ -3282,7 +3389,6 @@ sub processAutoAttack {
 
 	return if (AI::inQueue("attack"));
 	
-	return if (!$field);
 	if (AI::isIdle() || AI::is(qw/route follow sitAuto take items_gather items_take/)
 	     # Don't auto-attack monsters while taking loot, and itemsTake/GatherAuto >= 2
 	  && !($config{'itemsTakeAuto'} >= 2 && AI::inQueue("take", "items_take"))
@@ -3602,7 +3708,11 @@ sub processItemsGather {
 
 ##### AUTO-TELEPORT #####
 sub processAutoTeleport {
-	return if (AI::inQueue("teleport", "NPC"));
+	return if (AI::inQueue("NPC"));
+	if (defined(my $index = AI::findAction('teleport'))) {
+		my $task = AI::args($index);
+		return unless UNIVERSAL::isa($task, 'Task::Teleport::Random') && !$task->{flee};
+	}
 
 	my $safe = 0;
 
@@ -3667,7 +3777,7 @@ sub processAutoTeleport {
 	) {
 		message T("Teleporting due to insufficient HP/SP or too many aggressives\n"), "teleport";
 		$ai_v{temp}{clear_aiQueue} = 1;
-		ai_useTeleport(1);
+		ai_useTeleport(1, flee => 1);
 		$timeout{ai_teleport_hp}{time} = time;
 		return;
 	}
@@ -3682,7 +3792,7 @@ sub processAutoTeleport {
 			if ($teleAuto == 1 && !$char->{dead}) {
 				message TF("Teleporting to avoid %s\n", $monsters{$_}{name}), "teleport";
 				$ai_v{temp}{clear_aiQueue} = 1;
-				ai_useTeleport(1);
+				ai_useTeleport(1, flee => 1);
 				$timeout{ai_teleport_away}{time} = time;
 				return;
 			} elsif ($teleAuto < 0 && !$char->{dead}) {
@@ -3693,7 +3803,7 @@ sub processAutoTeleport {
 					if ($field->canMove($realMyPos, $pos)) {
 						message TF("Teleporting due to monster being too close %s\n", $monsters{$_}{name}), "teleport";
 						$ai_v{temp}{clear_aiQueue} = 1;
-						ai_useTeleport(1);
+						ai_useTeleport(1, flee => 1);
 						$timeout{ai_teleport_away}{time} = time;
 						return;
 					}
@@ -3720,7 +3830,9 @@ sub processAutoTeleport {
 	  && ($config{'lockMap'} eq "" || $config{lockMap} eq $field->baseName)
 	  && timeOut($timeout{ai_teleport_portal})
 	  && !AI::inQueue("storageAuto", "buyAuto", "sellAuto")) {
-		if (scalar(@portalsID)) {
+		my $portalDistance = $config{teleportAuto_portalDistance} || 0;
+		my $position = @portalsID && $portalDistance > 0 ? $char->position : undef;
+		if (@portalsID && ($portalDistance <= 0 || ($position && positionNearPortal($position, $portalDistance)))) {
 			message T("Teleporting to avoid portal\n"), "teleport";
 			$ai_v{temp}{clear_aiQueue} = 1;
 			ai_useTeleport(1);
@@ -4085,6 +4197,11 @@ sub processRepairAuto {
             $name = itemNameSimple($repairListItem->{nameID});
             if (existsInList($config{'repairAuto_list'}, $name) || !$config{'repairAuto_list'}) {
                 $messageSender->sendRepairItem($repairListItem);
+                if (defined(my $repairIndex = AI::findAction("repairAuto"))) {
+                    my $args = AI::args($repairIndex);
+                    $args->{waitingForList} = 0;
+                    $args->{repairing} = 1;
+                }
                 $timeout{ai_repair}{time} = time;
                 return;
             }

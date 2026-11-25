@@ -196,6 +196,7 @@ followEmotion 1
 followEmotion_distance 4
 followFaceDirection 0
 followDistanceMax 6
+followAttackDistance 0
 followDistanceMin 3
 followLostStep 12
 followSitAuto 0
@@ -229,6 +230,7 @@ route_randomWalk_inTown 0
 route_randomWalk_maxRouteTime 75
 route_maxWarpFee
 route_maxNpcTries 5
+route_relogOnNpcFailure 0
 route_teleport 0
 route_teleport_minDistance 75
 route_teleport_maxTries 8
@@ -314,6 +316,7 @@ teleportAuto_hp 10
 teleportAuto_sp 0
 teleportAuto_idle 0
 teleportAuto_portal 0
+teleportAuto_portalDistance 0
 teleportAuto_search 0
 teleportAuto_minAggressives 0
 teleportAuto_minAggressivesInLock 0
@@ -322,6 +325,7 @@ teleportAuto_maxDmg 500
 teleportAuto_maxDmgInLock 0
 teleportAuto_deadly 1
 teleportAuto_useSkill 1
+teleportAuto_whenDanger_useSkill 0
 teleportAuto_useChatCommand
 teleportAuto_allPlayers 0
 teleportAuto_notPlayers
@@ -401,6 +405,7 @@ playerLog 0
 logDead 1
 
 questDisplayStyle 2
+showFullItemOptions 1
 
 chatTitleOversize 0
 shopTitleOversize 0
@@ -488,6 +493,7 @@ mercenary_idleWalkType 1
 mercenary_followMode 1
 mercenary_followDistanceMin 3
 mercenary_followDistanceMax 10
+mercenary_followAttackDistance 0
 
 mercenary_moveNearWhenIdle 1
 mercenary_moveNearWhenIdle_minDistance 3
@@ -559,6 +565,7 @@ homunculus_idleWalkType 1
 homunculus_followMode 1
 homunculus_followDistanceMin 3
 homunculus_followDistanceMax 10
+homunculus_followAttackDistance 0
 
 homunculus_moveNearWhenIdle 1
 homunculus_moveNearWhenIdle_minDistance 3
@@ -604,6 +611,7 @@ pet_return 20
 
 attackSkillSlot {
 	lvl
+	fromBehind 0
 	dist 1
 	maxDist 1
 	maxCastTime 0
@@ -668,6 +676,7 @@ partySkill {
 	lvl
 	dist 1
 	maxDist 8
+	moveToTarget 0
 	maxCastTime 0
 	minCastTime 0
 	target
@@ -731,6 +740,8 @@ useSelf_item {
 
 ######## Autostorage/autosell ########
 
+buyAuto_freeWeightOnOverweight 1
+
 buyAuto {
 	npc
 	npc_steps b
@@ -750,6 +761,7 @@ buyAuto {
 }
 
 sellAuto 0
+sellAuto_keepEnhanced 0
 sellAuto_npc
 sellAuto_standpoint
 sellAuto_distance 3

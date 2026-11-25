@@ -2,12 +2,14 @@ package AI::Slave;
 
 use strict;
 use Time::HiRes qw(time);
+use Carp::Assert;
 use base qw/Actor::Slave/;
 use Globals;
 use Log qw/message warning error debug/;
 use Utils;
 use Misc;
 use Translation;
+use Utils::Benchmark;
 
 use AI::SlaveAttack;
 
@@ -170,8 +172,11 @@ sub iterate {
 	$slave->{master_dist} = $slave->blockDistance_master;
 
 	##### MANUAL AI STARTS HERE #####
-	
+
+	Benchmark::begin("ai_slave_manual") if DEBUG;
+	Benchmark::begin("ai_slave_attack") if DEBUG;
 	AI::SlaveAttack::process($slave);
+	Benchmark::end("ai_slave_attack") if DEBUG;
 	$slave->processSkillUse;
 	$slave->processTask('route', onError => sub {
 		my ($task, $error) = @_;
@@ -181,16 +186,21 @@ sub iterate {
 		}
 	});
 	$slave->processTask('move');
+	AI::CoreLogic::processAutoSkillUse($slave);
+	AI::CoreLogic::processPartySkillUse($slave);
+	Benchmark::end("ai_slave_manual") if DEBUG;
 
 	return unless ($slave->{slave_AI} == AI::AUTO());
 
 	##### AUTOMATIC AI STARTS HERE #####
-	
+
+	Benchmark::begin("ai_slave_auto") if DEBUG;
 	$slave->processWasFound;
 	$slave->processTeleportToMaster;
 	$slave->processAutoAttack;
 	$slave->processFollow;
 	$slave->processIdleWalk;
+	Benchmark::end("ai_slave_auto") if DEBUG;
 }
 
 sub get_follow_standby_limit {
@@ -339,6 +349,7 @@ sub processFollow {
 
 	my $max_dist = $config{$slave->{configPrefix}.'followDistanceMax'};
 	$max_dist = 10 unless defined $max_dist;
+	$max_dist = $config{$slave->{configPrefix}.'followAttackDistance'} || $max_dist if $slave->inQueue('attack');
 
 	my $dist1 = $slave->{master_dist};
 	my $dist2 = blockDistance($char->{pos_to}, $slave->{pos_to});
@@ -525,7 +536,8 @@ sub processAutoAttack {
 		($config{$slave->{configPrefix}.'attackAuto_duringRandomWalk'} && AI::is('route') && AI::args()->{isRandomWalk})
 	);
 	return unless (timeOut($timeout{$slave->{ai_attack_auto_timeout}}));
-	return unless ($slave->{master_dist} <= $config{$slave->{configPrefix}.'followDistanceMax'});
+	my $attack_follow_distance = $config{$slave->{configPrefix}.'followAttackDistance'} || $config{$slave->{configPrefix}.'followDistanceMax'};
+	return unless ($slave->{master_dist} <= $attack_follow_distance);
 	#next unless ((AI::action() ne "move" && AI::action() ne "route") || blockDistance($char->{pos_to}, $slave->{pos_to}) <= $config{$slave->{configPrefix}.'followDistanceMax'});
 	return unless (!$config{$slave->{configPrefix}.'attackAuto_notInTown'} || !$field->isCity);
 	return unless (!$config{$slave->{configPrefix}.'attackAuto_notWhile_storageAuto'} || !AI::inQueue("storageAuto"));
@@ -585,7 +597,7 @@ sub processAutoAttack {
 			my $target_pos = calcPosition($monster);
 			my $master_pos = $char->position;
 
-			next if (blockDistance($master_pos, $target_pos) > ($config{$slave->{configPrefix}.'followDistanceMax'} + $config{$slave->{configPrefix}.'attackMaxDistance'}));
+			next if (blockDistance($master_pos, $target_pos) > $attack_follow_distance);
 
 			# List monsters that master and other slaves are attacking
 			if (

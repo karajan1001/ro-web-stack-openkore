@@ -122,7 +122,7 @@ sub _resolveFieldFileFromFolders {
 		}
 	}
 
-	$FIELD_FILE_RESOLUTION_CACHE{$cacheKey} = $resolvedFile || '';
+	$FIELD_FILE_RESOLUTION_CACHE{$cacheKey} = $resolvedFile if $resolvedFile;
 	return $resolvedFile;
 }
 
@@ -368,6 +368,20 @@ sub getBlockDist {
 # Returns: walkable position in a reference to a position hash (which contains 'x' and 'y' keys) on success or undef on failure.
 sub closestWalkableSpot {
 	my ($self, $pos, $max_distance) = @_;
+	return $self->_closestWalkableSpotPerl($pos, $max_distance) if ref($self) ne __PACKAGE__;
+	return undef unless $pos && defined $pos->{x} && defined $pos->{y};
+	my $result = PathFinding::closestWalkableSpot($pos->{x}, $pos->{y}, $max_distance,
+		$self->{width}, $self->{height}, \$self->{rawMap});
+	# Unsupported numeric forms retain Perl coercion and subclass semantics.
+	return $result if !defined($result) || ref($result);
+	return if $result == -2; # Preserve the original empty-list return for a zero radius.
+	return $self->_closestWalkableSpotPerl($pos, $max_distance);
+}
+
+sub _closestWalkableSpotPerl {
+	my ($self, $pos, $max_distance) = @_;
+	return undef unless $pos && defined $pos->{x} && defined $pos->{y};
+	return undef if $self->isOffMap($pos->{x}, $pos->{y});
 	
 	my %center = ( x => $pos->{x}, y => $pos->{y} );
 	
@@ -775,7 +789,8 @@ sub loadDistanceMap {
 # Note: field data files (.fld2/.fld2.gz) are loaded from $Settings::fields_folder by default.
 # To override this per server, add `fields_folder <path>` (or `fieldsFolder`) in that
 # server block in tables/servers.txt, e.g. `fields_folder fields/ROla`.
-# Lookup order is: server-specific folder first, then global $Settings::fields_folder.
+# Lookup order is: $Settings::fields_folder/custom (your own field files, ignored by git),
+# then the server-specific folder, then global $Settings::fields_folder.
 # $Settings::maps_folder is only used by image() for generated/loaded map images.
 #
 # This method is like calling the constructor with the 'name' argument,
@@ -802,6 +817,7 @@ sub loadByName {
 	
 	my @fieldFolders = grep { defined $_ && $_ ne '' } ($fieldsFolder);
 	push @fieldFolders, $Settings::fields_folder if !defined($fieldsFolder) || $fieldsFolder ne $Settings::fields_folder;
+	unshift @fieldFolders, File::Spec->catdir($Settings::fields_folder, 'custom');
 
 	my $resolvedFile = _resolveFieldFileFromFolders($file, @fieldFolders);
 

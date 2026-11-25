@@ -23,6 +23,7 @@ use strict;
 use warnings;
 no warnings qw(redefine uninitialized);
 use Time::HiRes qw(time);
+use Scalar::Util qw(refaddr weaken);
 use utf8;
 
 use Modules 'register';
@@ -42,16 +43,19 @@ use Task;
 use Task::ErrorReport;
 use Match;
 use Translation;
-use Network::PacketParser qw(STATUS_STR STATUS_AGI STATUS_VIT STATUS_INT STATUS_DEX STATUS_LUK);
+use Network::PacketParser qw(STATUS_STR STATUS_AGI STATUS_VIT STATUS_INT STATUS_DEX STATUS_LUK STATUS_POW STATUS_STA STATUS_WIS STATUS_SPL STATUS_CON STATUS_CRT);
 
 our (%commands, %completions);
 my $needsInit = 1;
+my $pendingPackage;
 
 undef %commands;
 undef %completions;
 
 sub initHandlers {
 	register(
+		['consoleopen', T("Open the Windows console window."), \&cmdConsoleWindow],
+		['consoleclose', T("Close the Windows console window and suppress rendering."), \&cmdConsoleWindow],
 		['a', [
 			T("Attack a monster."),
 			[ T("<monster #>"), T("attack the specified monster") ],
@@ -107,6 +111,12 @@ sub initHandlers {
 			["deposit", T("Deposit Zeny in Banking")],
 			["withdraw", T("Withdraw Zeny from Banking")],
 			], \&cmdBank],
+		['barter', [
+			T("Trade with the current NPC barter shop."),
+			["", T("list offers and their required items")],
+			["buy <offer #> [<amount>]", T("trade for the specified offer")],
+			["close", T("close the barter shop")],
+			], \&cmdBarter],
 		['bg', [
 			T("Send a message in the battlegrounds chat."),
 			[T("<message>"), T("send <message> in the battlegrounds chat")]
@@ -396,7 +406,9 @@ sub initHandlers {
 			], \&cmdUseItemOnPlayer],
 		['is', [
 			T("Use item on yourself."),
-			[T("<inventory item #>"), T("use item on yourself")]
+			[T("<inventory item #>"), T("use item on yourself")],
+			["choose <option>", T("claim a reward from the selected package")],
+			["cancel", T("cancel package selection")]
 			], \&cmdUseItemOnSelf],
 		['kill', [
 			T("Attack another player (PVP/GVG only)."),
@@ -429,10 +441,6 @@ sub initHandlers {
 			], \&cmdNPCCreateRequest],
 		['nl', T("List NPCs that are on screen."), \&cmdNPCList],
 		['openbuyershop', undef, \&cmdOpenBuyerShop],
-        ['openpackage', [
-            T("Use package item with selection."),
-            [T("<item name> <boxIndex>"), T("use package item selecting option")]
-        ], \&cmdOpenPackage],
 		['openshop', T("Open your vending shop."), \&cmdOpenShop],
 		['p', [
 			T("Chat in the party chat."),
@@ -523,6 +531,7 @@ sub initHandlers {
 		['reload', [
 			T("Reload configuration files."),
 			["all", T("reload all control and table files")],
+			["field", T("load the field file of the current map again")],
 			[T("<names>"), T("reload control files in the list of <names>")],
 			[T("all except <names>"), T("reload all files except those in the list of <names>")]
 			], \&cmdReload],
@@ -559,6 +568,7 @@ sub initHandlers {
 			["read <mail_# | mail_id>", T("open the selected Rodex mail")],
 			["getitems", T("get items of current rodex mail")],
 			["getitems <mail_# | mail_id>", T("get items of rodex mail")],
+			["getall", T("get all attachments in the current rodex mailbox")],
 			["getzeny", T("get zeny of current rodex mail")],
 			["getzeny <mail_# | mail_id>", T("get zeny of rodex mail")],
 			["write", T("open a box to start write a rodex mail")],
@@ -658,7 +668,7 @@ sub initHandlers {
 		['stand', T("Stand up."), \&cmdStand],
 		['stat_add', [
 			T("Add status point."),
-			["str|agi|int|vit|dex|luk", T("add status points to a stat")]
+			["str|agi|int|vit|dex|luk|pow|sta|wis|spl|con|crt", T("add status points to a stat")]
 			], \&cmdStatAdd],
 		['switchconf', [
 			T("Switch configuration file."),
@@ -811,7 +821,13 @@ sub initHandlers {
 		['southeast', T("Move 5 steps southeast."), \&cmdManualMove],
 		['southwest', T("Move 5 steps southwest."), \&cmdManualMove],
 		['captcha', T("Answer captcha"), \&cmdAnswerCaptcha],
-		['refineui', undef, \&cmdRefineUI],
+		['refineui', [
+			T("Refine equipment in the NPC refining window."),
+			["info", T("show materials, success chances, and costs for the selected item")],
+			["select <inventory #>", T("request a list of materials for an item")],
+			["refine <inventory #> <material ID> [yes|no]", T("attempt one refinement, optionally using Blacksmith Blessing")],
+			["close", T("close the refining window")],
+			], \&cmdRefineUI],
 		['clan', undef, \&cmdClan],
 		['merge', undef, \&cmdMergeItem],
 
@@ -1329,9 +1345,10 @@ sub cmdAutoSell {
 		# Simulate list of items to sell
 		my @sellItems;
 		my $msg = center(T(" Items to sell (simulation) "), 50, '-') ."\n".
-				T("Amount  Item Name\n");
+				" " . T("Amount  Item Name\n");
 		for my $item (@{$char->inventory}) {
 			next if ($item->{unsellable});
+			next if ($config{sellAuto_keepEnhanced} && $item->isEnhanced);
 			my $control = items_control($item->{name},$item->{nameID});
 			if ($control->{'sell'} && $item->{'amount'} > $control->{keep}) {
 				my %obj;
@@ -1340,8 +1357,8 @@ sub cmdAutoSell {
 				my $item_name = $item->{name};
 				$item_name .= T(" (if unequipped)") if ($item->{equipped});
 				$msg .= swrite(
-						"@>>> x  @<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
-						[$item->{amount}, $item_name]);
+						"@>>>> x  @<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+						[$obj{amount}, $item_name]);
 			}
 		}
 		$msg .= ('-'x50) . "\n";
@@ -1420,6 +1437,69 @@ sub cmdBank {
 	}
 }
 
+sub cmdBarter {
+	my ($cmd, $args) = @_;
+	if (!$net || $net->getState() != Network::IN_GAME) {
+		error TF("You must be logged in the game to use this command '%s'\n", $cmd);
+		return;
+	}
+
+	my $shop = $char && $char->{barterShop};
+	unless ($shop) {
+		error T("No NPC barter shop is open.\n");
+		return;
+	}
+
+	if (!defined $args || $args eq '') {
+		my $list = T("NPC barter offers (stock at opening):\n");
+		foreach my $index (sort { $a <=> $b } keys %{$shop->{offers}}) {
+			my $offer = $shop->{offers}{$index};
+			my $name = itemNameSimple($offer->{nameID});
+			$name = "+$offer->{refine} $name" if $offer->{refine};
+			my @cost = map {
+				my $name = itemNameSimple($_->{nameID});
+				$name = "+$_->{refine} $name" if $_->{refine};
+				"$_->{amount} x $name";
+			} @{$offer->{cost}};
+			push @cost, TF("%s zeny", formatNumber($offer->{zeny})) if $offer->{zeny};
+			my $stock = $offer->{stock} == 0xFFFFFFFF ? T("unlimited") : $offer->{stock};
+			$list .= TF("%s: %s (stock: %s) - %s\n", $index, $name, $stock, @cost ? join(' + ', @cost) : T("free"));
+		}
+		message $list, 'list';
+
+	} elsif ($args eq 'close') {
+		$messageSender->sendBarterClose($shop->{expanded});
+
+	} elsif ($args =~ /\Abuy\s+([0-9]+)(?:\s+([0-9]+))?\z/ && $1 <= 0xFFFFFFFF
+		&& (!defined $2 || ($2 > 0 && $2 <= 0x7FFFFFFF))) {
+		my ($index, $amount) = (0 + $1, $2 || 1);
+		if ($char->{dead}) {
+			error T("You cannot barter while dead.\n");
+			return;
+		}
+		my $offer = $shop->{offers}{$index};
+		unless ($offer) {
+			error TF("Barter offer %s does not exist.\n", $index);
+			return;
+		}
+
+		my $currencyIndex;
+		unless ($shop->{expanded}) {
+			my $id = $offer->{cost}[0]{nameID};
+			my $currency = $char->inventory->getByNameID($id);
+			unless ($currency) {
+				error TF("Barter requires %s in your inventory.\n", itemNameSimple($id));
+				return;
+			}
+			$currencyIndex = unpack('v', $currency->{ID});
+		}
+		$messageSender->sendBarterBuy($shop->{expanded}, $index, $offer->{nameID}, $amount, $currencyIndex);
+
+	} else {
+		error T("Usage: barter [buy <offer #> [<amount>] | close]\n");
+	}
+}
+
 sub cmdBuy {
 	if (!$net || $net->getState() != Network::IN_GAME) {
 		error TF("You must be logged in the game to use this command '%s'\n", shift);
@@ -1469,6 +1549,7 @@ sub cmdCard {
 				"Can't use command while not connected to server.\n");
 		} elsif ($cardMergeIndex ne "") {
 			undef $cardMergeIndex;
+			undef @cardMergeItemsID;
 			$messageSender->sendCardMerge(-1, -1);
 			message T("Cancelling card merge.\n");
 		} else {
@@ -1514,6 +1595,7 @@ sub cmdCard {
 	} elsif ($arg1 eq "use") {
 		if ($arg2 =~ /^\d+$/) {
 			if ($char->inventory->get($arg2)) {
+				undef @cardMergeItemsID;
 				$cardMergeIndex = $arg2;
 				$messageSender->sendCardMergeRequest($char->inventory->get($cardMergeIndex)->{ID});
 				message TF("Sending merge list request for %s...\n",
@@ -3445,6 +3527,17 @@ sub cmdGmremove {
 	$messageSender->sendGMRemove($args);
 }
 
+sub cmdConsoleWindow {
+	my ($command) = @_;
+	my $method = $command eq 'consoleopen' ? 'openConsole' : 'closeConsole';
+	if (!$interface->can($method)) {
+		error T("Console window commands require the Windows Console interface.\n");
+		return;
+	}
+	$interface->$method();
+	message($command eq 'consoleopen' ? T("Console opened.\n") : T("Console closed.\n"));
+}
+
 sub cmdGuild {
 	my (undef, $args) = @_;
 	my ($arg1, $arg2) = split(' ', $args, 2);
@@ -4171,7 +4264,13 @@ sub cmdMove {
 				$file = File::Spec->catfile($Settings::fields_folder, $file) if ($Settings::fields_folder);
 				$file .= ".gz" if (! -f $file); # compressed file
 				if ($maps_lut{"${map_or_portal}.rsw"} || -f $file) {
-					my $move_field = new Field(name => $map_or_portal);
+					my $move_field = eval { new Field(name => $map_or_portal) };
+					if (my $e = caught('FileNotFoundException', 'IOException')) {
+						error TF("Cannot load field %s: %s\n", $map_or_portal, $e);
+						return;
+					} elsif ($@) {
+						die $@;
+					}
 					if (defined $x && defined $y) {
 						if ($move_field->isOffMap($x, $y)) {
 							error TF("Coordinates %s %s are off the map %s\n",$x, $y, $map_or_portal);
@@ -4238,38 +4337,6 @@ sub cmdNPCList {
 	}
 	$msg .= ('-'x57) . "\n";
 	message $msg, "list";
-}
-
-sub cmdOpenPackage {
-    my (undef, $args) = @_;
-
-    unless ($args) {
-        error "Usage: openpackage <item name> <boxIndex>\n";
-        return;
-    }
-
-    my @parts = split(/\s+/, $args);
-    my $boxIndex = pop @parts;
-    my $itemName = join(' ', @parts);
-
-    my $item = $char->inventory->getByName($itemName);
-
-    unless ($item) {
-        error "Item '$itemName' not found in inventory.\n";
-        return;
-    }
-
-    my $realIndex = unpack("v", $item->{ID});
-    my $nameID    = $item->{nameID};
-    $boxIndex = int($boxIndex);
-
-    message "Using package item: $item->{name} (slot $realIndex / binID $item->{binID}) option $boxIndex\n";
-
-    $messageSender->sendUsePackageItem(
-        $realIndex,
-        $nameID,
-        $boxIndex
-    );
 }
 
 sub cmdOpenShop {
@@ -5082,6 +5149,21 @@ sub cmdReload {
 	if ($args eq '') {
 		error T("Syntax Error in function 'reload' (Reload Configuration Files)\n" .
 			"Usage: reload <name|\"all\">\n");
+	} elsif ($args eq 'field') {
+		my $map = $field ? $field->name : $missingFieldName;
+		if (!defined $map) {
+			error T("No map to load a field for.\n");
+			return;
+		}
+		my $newField = eval { new Field(name => $map) };
+		if (my $e = caught('FileNotFoundException', 'IOException')) {
+			error TF("Cannot load field %s: %s\n", $map, $e);
+		} elsif ($@) {
+			die $@;
+		} else {
+			$field = $newField;
+			message TF("Field %s loaded\n", $field->baseName), "success";
+		}
 	} else {
 		parseReload($args);
 	}
@@ -5514,15 +5596,20 @@ sub cmdStats {
 			return;
 		}
 
-		if ($arg ne "str" && $arg ne "agi" && $arg ne "vit" && $arg ne "int" && $arg ne "dex" && $arg ne "luk") {
+		if ($arg ne "str" && $arg ne "agi" && $arg ne "vit" && $arg ne "int" && $arg ne "dex" && $arg ne "luk" &&
+			$arg ne "pow" && $arg ne "sta" && $arg ne "wis" && $arg ne "spl" && $arg ne "con" && $arg ne "crt") {
 			error T("Syntax Error in function 'st add' (Add Status Point)\n" .
-				"Usage: st add <str | agi | vit | int | dex | luk>\n");
+				"Usage: st add <str | agi | vit | int | dex | luk | pow | sta | wis | spl | con | crt>\n");
 
 		} elsif ($char->{$arg} >= 99 && !$config{statsAdd_over_99}) {
 			error T("Error in function 'st add' (Add Status Point)\n" .
 				"You cannot add more stat points than 99\n");
 
-		} elsif ($char->{"points_$arg"} > $char->{'points_free'}) {
+		} elsif (
+			($arg =~ /^(pow|sta|wis|spl|con|crt)$/)
+				? (!$char->{"need_$arg"} || $char->{"need_$arg"} > $char->{'traitpoint'})
+				: ($char->{"points_$arg"} > $char->{'points_free'})
+		) {
 			error TF("Error in function 'st add' (Add Status Point)\n" .
 				"Not enough status points to increase %s\n", $arg);
 
@@ -5540,9 +5627,20 @@ sub cmdStats {
 				$ID = STATUS_DEX;
 			} elsif ($arg eq "luk") {
 				$ID = STATUS_LUK;
+			} elsif ($arg eq "pow") {
+				$ID = STATUS_POW;
+			} elsif ($arg eq "sta") {
+				$ID = STATUS_STA;
+			} elsif ($arg eq "wis") {
+				$ID = STATUS_WIS;
+			} elsif ($arg eq "spl") {
+				$ID = STATUS_SPL;
+			} elsif ($arg eq "con") {
+				$ID = STATUS_CON;
+			} elsif ($arg eq "crt") {
+				$ID = STATUS_CRT;
 			}
 
-			$char->{$arg} += 1;
 			$messageSender->sendAddStatusPoint($ID);
 		}
 	} else {
@@ -5597,14 +5695,18 @@ sub cmdStatus {
 		return;
 	}
 
-	if ($char->{'exp_last'} > $char->{'exp'}) {
+	if (defined $char->{exp_last_delta}) {
+		$baseEXPKill = $char->{exp_last_delta};
+	} elsif ($char->{'exp_last'} > $char->{'exp'}) {
 		$baseEXPKill = $char->{'exp_max_last'} - $char->{'exp_last'} + $char->{'exp'};
 	} elsif ($char->{'exp_last'} == 0 && $char->{'exp_max_last'} == 0) {
 		$baseEXPKill = 0;
 	} else {
 		$baseEXPKill = $char->{'exp'} - $char->{'exp_last'};
 	}
-	if ($char->{'exp_job_last'} > $char->{'exp_job'}) {
+	if (defined $char->{exp_job_last_delta}) {
+		$jobEXPKill = $char->{exp_job_last_delta};
+	} elsif ($char->{'exp_job_last'} > $char->{'exp_job'}) {
 		$jobEXPKill = $char->{'exp_job_max_last'} - $char->{'exp_job_last'} + $char->{'exp_job'};
 	} elsif ($char->{'exp_job_last'} == 0 && $char->{'exp_job_max_last'} == 0) {
 		$jobEXPKill = 0;
@@ -5643,9 +5745,7 @@ sub cmdStatus {
 	my $totalelasped_string = sprintf("%.2f", $totalelasped);
 	my $elasped_string = sprintf("%.2f", $elasped);
 
-	my $msg = center(T(" Status "), 56, '-') ."\n" .
-		swrite(
-		TF("\@<<<<<<<<<<<<<<<<<<<<<<<         HP: \@>>>>>>>>>>>>>>>>>>\n" .
+	my $statusFormat = TF("\@<<<<<<<<<<<<<<<<<<<<<<<         HP: \@>>>>>>>>>>>>>>>>>>\n" .
 		"\@<<<<<<<<<<<<<<<<<<<<<<<         SP: \@>>>>>>>>>>>>>>>>>>\n" .
 		"                                 AP: \@>>>>>>>>>>>>>>>>>>\n" .
 		"Base: \@<<    \@>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n" .
@@ -5655,11 +5755,19 @@ sub cmdStatus {
 		"Total Damage: \@<<<<<<<<<<<<< Dmg/sec: \@<<<<<<<<<<<<<<\n" .
 		"Total Time spent (sec): \@>>>>>>>>\n" .
 		"Last Monster took (sec): \@>>>>>>>",
-		(exists $char->{spirits} && $char->{spirits} != 0 ? ($char->{amuletType} ? $char->{spirits} . "\tType: " . $char->{amuletType} : $char->{spirits}) : 0)),
+		(exists $char->{spirits} && $char->{spirits} != 0 ? ($char->{amuletType} ? $char->{spirits} . "\tType: " . $char->{amuletType} : $char->{spirits}) : 0));
+	my $expWidth = 42;
+	for my $value ($base_string, $job_string) {
+		$expWidth = length($value) - 1 if defined $value && length($value) > $expWidth + 1;
+	}
+	$statusFormat =~ s/\@>{42}/'@' . ('>' x $expWidth)/ge if $expWidth > 42;
+	my $statusWidth = $expWidth + 14;
+	my $msg = center(T(" Status "), $statusWidth, '-') . "\n" .
+		swrite($statusFormat,
 		[$char->{'name'}, $hp_string, $job_name_string, $sp_string, $ap_string,
 		$char->{'lv'}, $base_string, $char->{'lv_job'}, $job_string, $zeny_string, $weight_string,
 		$totaldmg, $dmgpsec_string, $totalelasped_string, $elasped_string]).
-		('-'x56) . "\n";
+		('-'x$statusWidth) . "\n";
 		$msg .= TF("Statuses: %s\n", $char->statusesStringAndTime(1));
 
 	message $msg, "info";
@@ -6025,7 +6133,42 @@ sub cmdTalk {
 
 sub cmdTalkNPC {
 	my (undef, $args) = @_;
+	
+	if ($args =~ /^ID_(\d+)\s+(.*)$/i) {
+		my $nameID = $1;
+		my $sequence = $2;
 
+		message TF("Talking to NPC with nameID %s using sequence: %s\n", $nameID, $sequence);
+
+		AI::queue("NPC", new Task::TalkNPC(
+			type     => 'talk',
+			nameID   => $nameID,
+			sequence => $sequence
+		));
+		return;
+	}
+
+	if ($args =~ /^"([^"]+)"\s+(.*)$/) {
+		my $npcName = $1;
+		my $sequence = $2;
+
+		my $npc = $npcsList->getByName($npcName);
+		unless ($npc) {
+			error TF("Error in function 'talknpc': NPC named '%s' not found on current map.\n", $npcName);
+			return;
+		}
+
+		message TF("Talking to NPC %s (nameID: %s, binID: %s) using sequence: %s\n",
+			$npc->name, $npc->{nameID}, $npc->{binID}, $sequence);
+
+		AI::queue("NPC", new Task::TalkNPC(
+			type     => 'talk',
+			nameID   => $npc->{nameID},
+			sequence => $sequence
+		));
+		return;
+	}
+	
 	my ($x, $y, $sequence) = $args =~ /^(\d+) (\d+)(?: (.+))?$/;
 	unless (defined $x) {
 		error T("Syntax Error in function 'talknpc' (Talk to an NPC)\n" .
@@ -6331,6 +6474,31 @@ sub cmdUseItemOnSelf {
 		return;
 	}
 	my (undef, $args) = @_;
+	my ($option) = $args =~ /\Achoose\s+([0-9]+)\z/;
+	if (($args eq 'cancel' || defined $option) && keys %{$messageSender->itemPackageCatalog}) {
+		if ($args eq 'cancel') {
+			undef $pendingPackage;
+			message T("Package selection cancelled.\n");
+			return;
+		}
+		my $selected = $pendingPackage && $pendingPackage->{item};
+		my $item = $selected && $char->inventory->getByID($selected->{ID});
+		my $options = $item && $messageSender->itemPackageOptions($item->{nameID});
+		if (!$item || refaddr($item) != refaddr($selected) || $item->{nameID} != $pendingPackage->{nameID}
+			|| !$options) {
+			undef $pendingPackage;
+			error T("The selected package is unavailable. Use 'is' to select a package.\n");
+			return;
+		}
+		$option = int($option);
+		unless (exists $options->{$option}) {
+			error TF("Option %d is unavailable for %s.\n", $option, $item->{name});
+			return;
+		}
+		undef $pendingPackage;
+		message TF("Opening %s with option %d.\n", $item->{name}, $option);
+		return $messageSender->sendUsePackageItem(unpack('v', $item->{ID}), $item->{nameID}, $option);
+	}
 	if ($args eq "") {
 		error T("Syntax Error in function 'is' (Use Item on Yourself)\n" .
 			"Usage: is <item>\n");
@@ -6342,7 +6510,24 @@ sub cmdUseItemOnSelf {
 			"Inventory Item %s does not exist.\n", $args);
 		return;
 	}
-	$item->use;
+	my $options = $messageSender->itemPackageOptions($item->{nameID});
+	unless ($options) {
+		return $item->use;
+	}
+	unless (keys %$options) {
+		undef $pendingPackage;
+		error TF("No valid reward options are listed for %s in itempackages.txt.\n", $item->{name});
+		return;
+	}
+	$pendingPackage = {item => $item, nameID => $item->{nameID}};
+	weaken($pendingPackage->{item});
+	my $menu = TF("Choose a reward for %s.\n", $item->{name});
+	for my $option (sort { $a <=> $b } keys %$options) {
+		my @rewards = map { $_->[1] . ' x ' . ($items_lut{$_->[0]} // "#$_->[0]") } @{$options->{$option}};
+		$menu .= "$option  " . join(', ', @rewards) . "\n";
+	}
+	$menu .= T("Use 'is choose <option>' to claim it or 'is cancel' to cancel.\n");
+	message $menu, 'list';
 }
 
 sub cmdUseSkill {
@@ -7397,6 +7582,39 @@ sub cmdAchieve {
 	}
 }
 
+sub rodexGetAll {
+	return unless $rodexList && $rodexList->{getall};
+
+	if (!exists $rodexList->{last_page}) {
+		unless (defined $rodexList->{current_page_last_mailID}) {
+			delete $rodexList->{getall};
+			error T("Cannot request the next rodex mail page.\n");
+			return;
+		}
+		$messageSender->rodex_next_maillist($rodexCurrentType, $rodexList->{current_page_last_mailID}, $rodexList->{current_page_last_mailID2} || 0);
+		return;
+	}
+
+	delete $rodexList->{getall};
+	my ($items, $zeny) = (0, 0);
+	for my $mail (values %{$rodexList->{mails}}) {
+		my $type = defined $mail->{openType} ? $mail->{openType} : $rodexCurrentType;
+		next if $type != $rodexCurrentType;
+		my $flags = $mail->{attachment_flags} || 0;
+		if (($flags & 4) && !$mail->{getall_pending_items}) {
+			$mail->{getall_pending_items} = 1;
+			$messageSender->rodex_request_items($mail->{mailID1}, $mail->{mailID2}, $type);
+			$items++;
+		}
+		if (($flags & 2) && !$mail->{getall_pending_zeny}) {
+			$mail->{getall_pending_zeny} = 1;
+			$messageSender->rodex_request_zeny($mail->{mailID1}, $mail->{mailID2}, $type);
+			$zeny++;
+		}
+	}
+	message TF("Rodex getall requested %d item and %d zeny attachments.\n", $items, $zeny);
+}
+
 sub cmdRodex {
 	if (!$net || $net->getState() != Network::IN_GAME) {
 		error TF("You must be logged in the game to use this command '%s'\n", shift);
@@ -7855,6 +8073,20 @@ sub cmdRodex {
 		message T("Sending rodex mail.\n");
 		$messageSender->rodex_send_mail();
 
+	} elsif ($arg1 eq 'getall') {
+		if (!defined $rodexList) {
+			error T("Your rodex mail box is closed.\n");
+			return;
+		} elsif (defined $rodexWrite) {
+			error T("You are writing a rodex mail.\n");
+			return;
+		} elsif ($rodexList->{getall}) {
+			error T("Rodex getall is already loading mail pages.\n");
+			return;
+		}
+		$rodexList->{getall} = 1;
+		rodexGetAll();
+
 	} elsif ($arg1 eq 'getitems') {
 		if (!defined $rodexList) {
 			error T("Your rodex mail box is closed.\n");
@@ -7994,7 +8226,7 @@ sub cmdRodex {
 
 	} else {
 		error T("Syntax Error in function 'rodex' (rodex mail)\n" .
-			"Usage: rodex [<open|close|list|refresh|nextpage|maillist|read|getitems|getzeny|delete|write|cancel|settarget|settitle|setbody|setzeny|add|remove|itemslist|draft|send>]\n");
+			"Usage: rodex [<open|close|list|refresh|nextpage|maillist|read|getall|getitems|getzeny|delete|write|cancel|settarget|settitle|setbody|setzeny|add|remove|itemslist|draft|send>]\n");
 	}
 }
 
@@ -8134,104 +8366,120 @@ sub cmdExchangeItem {
 # @author [Cydh]
 ##
 sub cmdRefineUI {
+	my ($cmd, $input) = @_;
 	if (!$net || $net->getState() != Network::IN_GAME) {
-		error TF("You must be logged in the game to use this command '%s'\n", shift);
+		error TF("You must be logged in the game to use this command '%s'\n", $cmd);
 		return;
 	}
-	my ($cmd, $args_string) = @_;
-	if (!defined $refineUI) {
+	if (!$refineUI || !$refineUI->{open}) {
 		error T("Cannot use RefineUI yet.\n");
 		return;
 	}
-	my @args = parseArgs($args_string, 4);
 
-	# refineui close
-	# End Refine UI state
-	if ($args[0] eq "cancel" || $args[0] eq "end" || $args[0] eq "no") {
-		message T("Closing Refine UI.\n"), "info";
-		undef $refineUI;
-		$messageSender->sendRefineUIClose();
-		return;
-
-	# refineui select [item_index]
-	# Do refine
-	} elsif ($args[0] eq "select") {
-		#my ($invIndex) = $args =~ /^(\d+)/;
-		my $invIndex = $args[1];
-
-		# Check item
+	my ($action, @args) = parseArgs($input || 'info');
+	if (($action eq 'select' && @args == 1 && $args[0] =~ /\A[0-9]+\z/)
+		|| ($action eq 'refine' && (@args == 2 || @args == 3) && $args[0] =~ /\A[0-9]+\z/
+			&& $args[1] =~ /\A[0-9]+\z/ && (!defined $args[2] || $args[2] =~ /\A(?:yes|no|0|1)\z/))) {
+		my ($invIndex, $matNameID, $catalyst) = @args;
 		my $item = $char->inventory->get($invIndex);
-		if (!defined $item) {
+		if (!$item) {
 			warning TF("Item in index '%d' is not exists.\n", $invIndex);
 			return;
-		} elsif ($item->{equipped} != 0) {
+		} elsif ($item->{equipped}) {
 			warning TF("Cannot select equipped %s (%d) item!\n", $item->{name}, $invIndex);
 			return;
-		}
-		$refineUI->{invIndex} = $invIndex;
-		message TF("Request info for selected item to refine: %s (%d)\n", $item->{name}, $invIndex);
-		$messageSender->sendRefineUISelect( $item->{ID});
-		return;
-
-	# refineui refine [item_index] [material_id] [catalyst_toggle]
-	# Do refine
-	} elsif ($args[0] eq "refine") {
-		#my ($invIndex, $matInvIndex, $catalyst) = $args =~ /^(\d+) (\d+) (\d+|yes|no)/;
-		my $invIndex = $args[1];
-		my $matNameID = $args[2];
-		my $catalyst = $args[3];
-
-		# Check item
-		my $item = $char->inventory->get($invIndex);
-		if (!defined $item) {
-			warning TF("Item in index '%d' is not exists.\n", $invIndex);
-			return;
-		} elsif ($item->{equipped} != 0) {
-			warning TF("Cannot select equipped %s (%d) item!\n", $item->{name}, $invIndex);
+		} elsif (!$item->{identified} || $item->{broken}) {
+			warning TF("Cannot refine unidentified or broken equipment %s (%d).\n", $item->{name}, $invIndex);
 			return;
 		}
 
-		# Check material
-		my $material = $char->inventory->getByNameID($matNameID);
-		if (!defined $material) {
-			warning TF("You don't have enough '%s' (%d) as refine material.\n", itemNameSimple($matNameID), $matNameID);
+		if ($action eq 'select') {
+			message TF("Request info for selected item to refine: %s (%d)\n", $item->{name}, $invIndex);
+			$messageSender->sendRefineUISelect($item->{ID});
 			return;
 		}
-		# Check if the selected item is valid material
-		my $valid = 0;
-		foreach my $mat (@{$refineUI->{materials}}) {
-			if ($mat->{nameid} == $matNameID) {
-				$valid = 1;
-			}
+
+		if (!$refineUI->{item} || refaddr($refineUI->{item}) != refaddr($item)) {
+			error T("Select this item and wait for its refining materials first.\n");
+			return;
+		} elsif ($refineUI->{pending}) {
+			error T("A refinement is already pending. Wait for its result or select the item again.\n");
+			return;
 		}
-		if ($valid != 1) {
+
+		my ($cost) = grep {$_->{nameid} == $matNameID} @{$refineUI->{materials}};
+		if (!$cost) {
 			warning TF("'%s' (%d) is not valid refine material for '%s'.\n", itemNameSimple($matNameID), $matNameID, $item->{name});
 			return;
 		}
+		my $material = $char->inventory->getByNameID($matNameID);
+		if (!$material) {
+			warning TF("You don't have enough '%s' (%d) as refine material.\n", itemNameSimple($matNameID), $matNameID);
+			return;
+		} elsif ($char->{zeny} < $cost->{zeny}) {
+			warning TF("You do not have enough zeny to refine. Needed: %d.\n", $cost->{zeny});
+			return;
+		}
 
-		# Check catalyst toggle
-		my $useCatalyst = 0;
-		#my $Blacksmith_Blessing = 6635; # 6635,Blacksmith_Blessing,Blacksmith Blessing
-		my $blessName = itemNameSimple($Blacksmith_Blessing);
-		if ($refineUI->{bless} > 0 && ($catalyst == 1 || $catalyst eq "yes")) {
-			my $catalystItem = $char->inventory->getByNameID($Blacksmith_Blessing);
-			if (!$catalystItem || $catalystItem->{amount} < $refineUI->{bless}) {
+		my $useCatalyst = defined $catalyst && ($catalyst eq '1' || $catalyst eq 'yes') ? 1 : 0;
+		my $matStr = $material->{name};
+		if ($useCatalyst) {
+			my $blessName = $items_lut{$Blacksmith_Blessing} || T("Blacksmith Blessing");
+			my $bless = $char->inventory->getByNameID($Blacksmith_Blessing);
+			if (!$refineUI->{bless}) {
+				warning TF("%s is unavailable for this refinement.\n", $blessName);
+				return;
+			} elsif (!$bless || $bless->{amount} < $refineUI->{bless}) {
 				warning TF("You don't have %s for RefineUI. Needed: %d!\n", $blessName, $refineUI->{bless});
 				return;
 			}
-			$useCatalyst = 1;
-		}
-
-		my $matStr = $material->{name};
-		if ($useCatalyst) {
 			$matStr .= " and ".$refineUI->{bless}."x ".$blessName;
 		}
 		message TF("Refining item: %s with material %s.\n", $item->{name}, $matStr);
 		$messageSender->sendRefineUIRefine($item->{ID}, $matNameID, $useCatalyst);
-		return;
+
+	} elsif ($action eq 'info' && !@args) {
+		my $item = $refineUI->{item};
+		if (!$item || $refineUI->{pending}) {
+			error T("Select an item and wait for its refining materials first.\n");
+			return;
+		}
+		my $current = $char->inventory->getByID($item->{ID});
+		if (!$current || refaddr($current) != refaddr($item)) {
+			error T("Select an item and wait for its refining materials first.\n");
+			return;
+		}
+
+		my $bless = $char->inventory->getByNameID($Blacksmith_Blessing);
+		message T("========= RefineUI Info =========\n"), "info";
+		message TF("Target Equip:\n".
+				"- Index: %d\n".
+				"- Name: %s\n", $item->{binID}, $item->{name}), "info";
+
+		message TF("%s:\n".
+				"- Needed: %d\n".
+				"- Owned: %d\n", $items_lut{$Blacksmith_Blessing} || T("Blacksmith Blessing"),
+				$refineUI->{bless}, $bless ? $bless->{amount} : 0), "info";
+
+		my $list = center(T(" Possible Materials "), 53, '-') ."\n" .
+				T("Mat_ID      %           Zeny        Material                        \n");
+		foreach my $mat (@{$refineUI->{materials}}) {
+			my $owned = $char->inventory->getByNameID($mat->{nameid});
+			my $count = sprintf("%d ea %s", $owned ? $owned->{amount} : 0, itemNameSimple($mat->{nameid}));
+			$list .= swrite(
+				"@>>>>>>>> @>>>>> @>>>>>>>>>>>>   @<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+				[$mat->{nameid}, $mat->{chance}, $mat->{zeny}, $count]);
+		}
+		$list .= ('-'x53) . "\n";
+		message $list, "info";
+		message TF("Continue: refineui refine %d [Mat_ID] [catalyst_toggle] to continue.\n", $item->{binID}), "info";
+		message TF("Refine UI ready for inventory item %d: %s\n", $item->{binID}, $item->{name}), "info";
+
+	} elsif ($action =~ /\A(?:close|cancel|end|no)\z/ && !@args) {
+		message T("Closing Refine UI.\n"), "info";
+		$messageSender->sendRefineUIClose();
 	} else {
-		error T("Invalid usage!\n");
-		return;
+		error T("Usage: refineui [info | select <inventory #> | refine <inventory #> <material ID> [yes|no] | close]\n");
 	}
 }
 
